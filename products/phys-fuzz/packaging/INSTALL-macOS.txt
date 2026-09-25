@@ -1,0 +1,9 @@
+Phys Fuzz (macOS)
+
+Copy the plugin(s) into your plugin folders, then rescan in your DAW:
+
+  Phys Fuzz.vst3       ->  ~/Library/Audio/Plug-Ins/VST3/
+  Phys Fuzz.component  ->  ~/Library/Audio/Plug-Ins/Components/   (Logic, GarageBand, other AU hosts)
+
+(~/Library is hidden in Finder: Go menu -> Go to Folder... and paste the path.)
+Universal build: Apple Silicon and Intel, macOS 11 or later.

@@ -6,13 +6,14 @@ juce_add_plugin(CircuitDecimator
     PLUGIN_MANUFACTURER_CODE Adst
     PLUGIN_CODE Cdcm
     PRODUCT_NAME "Circuit Decimator"
-    FORMATS VST3 Standalone
+    BUNDLE_ID com.audiodestrukt.circuitdecimator
+    FORMATS ${CD_PLUGIN_FORMATS}
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     VST3_CATEGORIES Fx Distortion
-    COPY_PLUGIN_AFTER_BUILD TRUE)
+    COPY_PLUGIN_AFTER_BUILD ${CD_COPY_PLUGINS})
 
 target_sources(CircuitDecimator PRIVATE PluginProcessor.cpp)
 target_link_libraries(CircuitDecimator
@@ -23,7 +24,7 @@ target_link_libraries(CircuitDecimator
 
 # Circuit Bench: loops a WAV (or live input) through the workbench processor,
 # with presets, search results, bypass, scope, schematic and solver stats.
-juce_add_gui_app(CircuitBench PRODUCT_NAME "Circuit Bench")
+juce_add_gui_app(CircuitBench PRODUCT_NAME "Circuit Bench" BUNDLE_ID com.audiodestrukt.circuitbench)
 target_sources(CircuitBench PRIVATE bench/Main.cpp PluginProcessor.cpp)
 target_include_directories(CircuitBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(CircuitBench PRIVATE

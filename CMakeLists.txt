@@ -4,23 +4,36 @@ cmake_minimum_required(VERSION 3.22)
 #   core/            circuit solver + knob surface (plain C++), engine + UI (JUCE)
 #   products/<name>  each product's plugin target(s)
 #   tools/ sim/ search/   harnesses, ngspice reference, sound search
-project(CircuitDecimator VERSION 0.1.0)
+# CD_VERSION becomes each plugin's version (CI passes it from the release tag).
+set(CD_VERSION "0.1.0" CACHE STRING "Plugin version (x.y.z)")
+project(CircuitDecimator VERSION ${CD_VERSION})
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(CD_COPY_PLUGINS "Install built plugins into this machine's plugin folders" ON)
+option(CD_BUILD_TOOLS "Build the dev tools (ff_render, libfuzzface, plugin_render)" ON)
+
+# AU is macOS-only; everything ships VST3 (+ a Standalone app for quick checks).
+set(CD_PLUGIN_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND CD_PLUGIN_FORMATS AU)
+endif()
 
 # ---- plain C++ circuit core (no JUCE): solver, knobs, presets, macros
 add_library(cd_circuit INTERFACE)
 target_include_directories(cd_circuit INTERFACE core products)
 
-# Offline harness for the realtime solver; sim/compare.py checks it against ngspice.
-add_executable(ff_render tools/ff_render.cpp)
-target_link_libraries(ff_render PRIVATE cd_circuit)
+if(CD_BUILD_TOOLS)
+    # Offline harness for the realtime solver; sim/compare.py checks it against ngspice.
+    add_executable(ff_render tools/ff_render.cpp)
+    target_link_libraries(ff_render PRIVATE cd_circuit)
 
-# C API over the solver + knob mapping, loaded by search/explore.py via ctypes.
-add_library(fuzzface SHARED tools/ff_capi.cpp)
-target_link_libraries(fuzzface PRIVATE cd_circuit)
-target_compile_options(fuzzface PRIVATE -O3)
+    # C API over the solver + knob mapping, loaded by search/explore.py via ctypes.
+    add_library(fuzzface SHARED tools/ff_capi.cpp)
+    target_link_libraries(fuzzface PRIVATE cd_circuit)
+    target_compile_options(fuzzface PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+endif()
 
 # ---- JUCE (cloned into ./JUCE: git clone --depth 1 --branch 9.0.2 https://github.com/juce-framework/JUCE.git JUCE)
 if(NOT DEFINED JUCE_DIR)
@@ -51,16 +64,18 @@ add_subdirectory(products/workbench)
 add_subdirectory(products/phys-fuzz)
 
 # ---- headless VST3 host: renders a WAV through any built plugin (with automation)
-juce_add_console_app(plugin_render PRODUCT_NAME "plugin_render")
-target_sources(plugin_render PRIVATE tools/plugin_render.cpp)
-target_compile_definitions(plugin_render PRIVATE
-    JUCE_PLUGINHOST_VST3=1
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0)
-target_link_libraries(plugin_render
-    PRIVATE
-        juce::juce_audio_processors_headless
-        juce::juce_audio_formats
-    PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_warning_flags)
+if(CD_BUILD_TOOLS)
+    juce_add_console_app(plugin_render PRODUCT_NAME "plugin_render")
+    target_sources(plugin_render PRIVATE tools/plugin_render.cpp)
+    target_compile_definitions(plugin_render PRIVATE
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0)
+    target_link_libraries(plugin_render
+        PRIVATE
+            juce::juce_audio_processors_headless
+            juce::juce_audio_formats
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
+endif()

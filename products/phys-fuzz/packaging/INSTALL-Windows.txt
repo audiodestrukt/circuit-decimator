@@ -1,0 +1,7 @@
+Phys Fuzz (Windows)
+
+Copy the "Phys Fuzz.vst3" folder into:
+
+  C:\Program Files\Common Files\VST3\
+
+then rescan plugins in your DAW. 64-bit VST3 hosts only.

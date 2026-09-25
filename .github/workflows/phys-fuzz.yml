@@ -1,0 +1,187 @@
+name: Phys Fuzz builds
+
+# Builds Phys Fuzz for macOS (VST3 + AU, universal), Windows (VST3) and Linux
+# (VST3), validates each with pluginval (and auval on macOS), and packages one
+# zip per platform. This repo is private, so macOS runner minutes bill at 10x:
+# it only runs on a release tag or by hand.
+#
+#   git tag phys-fuzz-v0.1.0 && git push origin phys-fuzz-v0.1.0   ->  draft GitHub release with the zips
+#   Actions -> Phys Fuzz builds -> Run workflow                     ->  zips as workflow artifacts
+#
+# macOS signing + notarization run only when the secrets exist (see the
+# "Sign and notarize" step); without them the macOS zip is unsigned and
+# Gatekeeper will block it on buyers' machines, so don't sell that one.
+on:
+  push:
+    tags:
+      - 'phys-fuzz-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the draft release on tags
+
+env:
+  # JUCE is cloned locally, not vendored: pin the version this is developed against.
+  JUCE_VERSION: 9.0.2
+  PRODUCT: Phys Fuzz
+  TARGET: PhysFuzz
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15,     platform: macOS }
+          - { os: windows-2022, platform: Windows }
+          - { os: ubuntu-24.04, platform: Linux }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Version from tag
+        id: ver
+        run: |
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" == phys-fuzz-v* ]]; then VERSION="${REF#phys-fuzz-v}"; else VERSION="0.0.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $PRODUCT $VERSION"
+
+      - name: Clone JUCE
+        run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Linux build dependencies
+        if: matrix.platform == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build xvfb \
+            libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev \
+            libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libgl1-mesa-dev
+
+      - name: Configure
+        run: |
+          ARGS=(-DCMAKE_BUILD_TYPE=Release -DCD_VERSION="${{ steps.ver.outputs.version }}"
+                -DCD_COPY_PLUGINS=OFF -DCD_BUILD_TOOLS=OFF)
+          case "${{ matrix.platform }}" in
+            macOS)   cmake -B build "${ARGS[@]}" -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 ;;
+            Windows) cmake -B build "${ARGS[@]}" -G "Visual Studio 17 2022" -A x64 ;;
+            Linux)   cmake -B build "${ARGS[@]}" -G Ninja ;;
+          esac
+
+      - name: Build
+        run: |
+          TARGETS=(--target "${TARGET}_VST3")
+          [[ "${{ matrix.platform }}" == macOS ]] && TARGETS+=(--target "${TARGET}_AU")
+          cmake --build build --config Release --parallel 4 "${TARGETS[@]}"
+          echo "ART=build/products/phys-fuzz/${TARGET}_artefacts/Release" >> "$GITHUB_ENV"
+
+      - name: pluginval (VST3)
+        run: |
+          case "${{ matrix.platform }}" in
+            macOS)   ZIP=pluginval_macOS.zip ;;
+            Windows) ZIP=pluginval_Windows.zip ;;
+            Linux)   ZIP=pluginval_Linux.zip ;;
+          esac
+          curl -sSL -o pv.zip "https://github.com/Tracktion/pluginval/releases/latest/download/$ZIP"
+          unzip -q pv.zip -d pv
+          case "${{ matrix.platform }}" in
+            macOS)   PV=pv/pluginval.app/Contents/MacOS/pluginval ;;
+            Windows) PV=pv/pluginval.exe ;;
+            Linux)   PV="xvfb-run -a pv/pluginval" ;;
+          esac
+          $PV --strictness-level 5 --validate-in-process --skip-gui-tests --timeout-ms 300000 \
+              --validate "$ART/VST3/$PRODUCT.vst3"
+
+      - name: auval (AU)
+        if: matrix.platform == 'macOS'
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$ART/AU/$PRODUCT.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -v aufx Phfz Adst
+
+      # Needs repo secrets: MACOS_DEVID_P12_BASE64 / MACOS_DEVID_P12_PASSWORD (a
+      # "Developer ID Application" certificate: not the App Store ones) and the
+      # App Store Connect API key (APP_STORE_CONNECT_P8 / _KEY_ID / _ISSUER_ID,
+      # same names as the other audiodestrukt repos) for notarytool.
+      - name: Sign and notarize (macOS)
+        if: matrix.platform == 'macOS'
+        env:
+          P12_B64: ${{ secrets.MACOS_DEVID_P12_BASE64 }}
+          P12_PASS: ${{ secrets.MACOS_DEVID_P12_PASSWORD }}
+          P8: ${{ secrets.APP_STORE_CONNECT_P8 }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          if [ -z "$P12_B64" ] || [ -z "$P8" ]; then
+            echo "::warning::No Developer ID / notary secrets: the macOS build is UNSIGNED and not sellable."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"; KC_PASS=$(uuidgen)
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          printf '%s' "$P12_B64" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/devid.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KC" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+          [ -n "$IDENTITY" ] || { echo "::error::No Developer ID Application identity in the p12"; exit 1; }
+          for B in "$ART/VST3/$PRODUCT.vst3" "$ART/AU/$PRODUCT.component"; do
+            codesign --force --timestamp --options runtime --sign "$IDENTITY" "$B"
+            codesign --verify --strict --verbose=2 "$B"
+          done
+          mkdir -p ~/private_keys && printf '%s' "$P8" > ~/private_keys/AuthKey_${KEY_ID}.p8
+          ditto -c -k --keepParent "$ART/VST3/$PRODUCT.vst3" notarize-vst3.zip
+          ditto -c -k --keepParent "$ART/AU/$PRODUCT.component" notarize-au.zip
+          for Z in notarize-vst3.zip notarize-au.zip; do
+            xcrun notarytool submit "$Z" --key ~/private_keys/AuthKey_${KEY_ID}.p8 \
+              --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
+          done
+          xcrun stapler staple "$ART/VST3/$PRODUCT.vst3"
+          xcrun stapler staple "$ART/AU/$PRODUCT.component"
+          echo "SIGNED=1" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          NAME="PhysFuzz-${{ steps.ver.outputs.version }}-${{ matrix.platform }}"
+          mkdir -p "dist/$NAME"
+          cp -R "$ART/VST3/$PRODUCT.vst3" "dist/$NAME/"
+          [[ "${{ matrix.platform }}" == macOS ]] && cp -R "$ART/AU/$PRODUCT.component" "dist/$NAME/"
+          cp "products/phys-fuzz/packaging/INSTALL-${{ matrix.platform }}.txt" "dist/$NAME/INSTALL.txt"
+          cd dist
+          case "${{ matrix.platform }}" in
+            macOS)   ditto -c -k --keepParent "$NAME" "$NAME.zip" ;;   # keeps signatures + symlinks
+            Windows) 7z a -tzip "$NAME.zip" "$NAME" > /dev/null ;;
+            Linux)   zip -qr "$NAME.zip" "$NAME" ;;
+          esac
+          echo "ZIP=dist/$NAME.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhysFuzz-${{ matrix.platform }}
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/phys-fuzz-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.zip --repo "${{ github.repository }}" \
+            --draft --title "Phys Fuzz ${GITHUB_REF_NAME#phys-fuzz-v}" \
+            --notes "Built by CI. Check the macOS zip was signed (the workflow warns if not) before selling."

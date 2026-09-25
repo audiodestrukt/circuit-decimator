@@ -6,13 +6,14 @@ juce_add_plugin(PhysFuzz
     PLUGIN_MANUFACTURER_CODE Adst
     PLUGIN_CODE Phfz
     PRODUCT_NAME "Phys Fuzz"
-    FORMATS VST3 Standalone
+    BUNDLE_ID com.audiodestrukt.physfuzz
+    FORMATS ${CD_PLUGIN_FORMATS}
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     VST3_CATEGORIES Fx Distortion
-    COPY_PLUGIN_AFTER_BUILD TRUE)
+    COPY_PLUGIN_AFTER_BUILD ${CD_COPY_PLUGINS})
 
 target_sources(PhysFuzz PRIVATE PhysFuzzProcessor.cpp)
 target_link_libraries(PhysFuzz
