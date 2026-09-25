@@ -33,7 +33,7 @@ void ff_physfuzz_to_workbench(const double* phys, double* wb) { pf::toWorkbench(
 void ff_render(const double* knobs, const float* in, float* out, int n, double fs, int maxIterations,
                double* stats)
 {
-    cd::FuzzFace ff;
+    cd::FuzzFaceDK ff;
     ff.maxIterations = maxIterations;
     ff.setParams(cd::knobsToCircuit(knobs));
     ff.prepare(fs);

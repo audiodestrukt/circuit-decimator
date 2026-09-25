@@ -27,6 +27,89 @@ struct Vec {
     void fill(double v) { for (auto& e : d) e = v; }
 };
 
+// Gummel-Poon subset shared by every solver (FuzzFace.h reference MNA,
+// FuzzFaceDK.h realtime DK), templated on precision so the float path uses the
+// exact same equations. Mirrors ngspice bjtload.c / bjttemp.c for IS BF BR VAF
+// ISE NE with XTI/EG temperature scaling (XTB = 0).
+namespace bjt {
+
+inline constexpr double BR = 5, NE = 1.5, ISE = 5e-14, XTI = 3, EG = 1.11;
+inline constexpr double TNOM = 300.15, KQ = 8.617333262e-5, GMIN = 1e-12;
+
+template <typename R>
+struct Model {
+    R bf = 0, is = 0, ise = 0, vt = 0, vcrit = 0, vaf = 0;
+};
+
+// collector/base currents and their derivatives w.r.t. (vbe, vbc)
+template <typename R>
+struct Eval {
+    R ic, ib, dicVbe, dicVbc, dibVbe, dibVbc;
+};
+
+template <typename R>
+inline Eval<R> evaluate(const Model<R>& m, R vbe, R vbc)
+{
+    const R vt = m.vt, gmin = R(GMIN), br = R(BR), ne = R(NE);
+    const R evbe = std::exp(std::min(vbe / vt, R(80)));
+    const R evbc = std::exp(std::min(vbc / vt, R(80)));
+    const R cbe = m.is * (evbe - 1) + gmin * vbe;
+    const R gbe = m.is * evbe / vt + gmin;
+    const R cbc = m.is * (evbc - 1) + gmin * vbc;
+    const R gbc = m.is * evbc / vt + gmin;
+    const R eben = std::exp(std::min(vbe / (ne * vt), R(80)));
+    const R cben = m.ise * (eben - 1);
+    const R gben = m.ise * eben / (ne * vt);
+
+    const R q1 = R(1) / (R(1) - vbc / m.vaf);
+    const R qb = q1;
+    const R dqbdvc = q1 * qb / m.vaf;
+
+    const R ic = (cbe - cbc) / qb - cbc / br;
+    const R ib = cbe / m.bf + cben + cbc / br;
+    const R gm = gbe / qb;
+    const R go = (gbc + (cbe - cbc) * dqbdvc / qb) / qb;
+    const R gpi = gbe / m.bf + gben;
+    const R gmu = gbc / br;
+    return { ic, ib, gm, -go - gmu, gpi, gmu };
+}
+
+// SPICE junction limiting; returns true if vnew had to be limited
+template <typename R>
+inline bool pnjlim(R& vnew, R vold, R vt, R vcrit)
+{
+    if (vnew > vcrit && std::abs(vnew - vold) > 2 * vt) {
+        if (vold > 0) {
+            const R arg = 1 + (vnew - vold) / vt;
+            vnew = arg > 0 ? vold + vt * std::log(arg) : vcrit;
+        } else {
+            vnew = vt * std::log(vnew / vt);
+        }
+        return true;
+    }
+    return false;
+}
+
+// temperature-scaled model (ngspice bjttemp.c)
+inline Model<double> model(double isat, double bf, double vaf, double tempC)
+{
+    const double T = tempC + 273.15;
+    const double vt = T * KQ;
+    const double ratio = T / TNOM;
+    const double factlog = (ratio - 1) * EG / vt + XTI * std::log(ratio);
+    const double is = isat * std::exp(factlog);
+    Model<double> m;
+    m.bf = bf;
+    m.is = is;
+    m.ise = ISE * std::exp(factlog / NE);
+    m.vt = vt;
+    m.vcrit = vt * std::log(vt / (std::sqrt(2.0) * is));
+    m.vaf = vaf;
+    return m;
+}
+
+} // namespace bjt
+
 struct FuzzFaceParams {
     // supply: battery EMF, internal resistance (dying battery), bulk cap
     double vcc = 9, rbat = 1, cbulk = 100e-9;
@@ -136,18 +219,29 @@ public:
     int lastIterations = 0;
     long failures = 0;
 
+    // ---- introspection for other solvers (FuzzFaceDK builds its matrices from these)
+    // linear conductance matrix incl. reactive companions and source conductances
+    const Vec<N * N>& linearMatrix() const { return Glin; }
+    // reactive elements 0..4 = capacitors, 5 = pickup inductor
+    static constexpr int kReactive = 6;
+    struct Reactive { int a, b; double geq, vPrev, iPrev; bool inductor; };
+    Reactive reactive(int k) const
+    {
+        if (k < 5) return { caps[k].a, caps[k].b, caps[k].geq, caps[k].vPrev, caps[k].iPrev, false };
+        return { inductor.a, inductor.b, inductor.geq, inductor.vPrev, inductor.iPrev, true };
+    }
+    struct Transistor { int c, b, e; bjt::Model<double> model; double vbe, vbc; };
+    Transistor transistor(int i) const { return { bjt[i].c, bjt[i].b, bjt[i].e, bjt[i].m, bjt[i].vbe, bjt[i].vbc }; }
+
 private:
     struct Res { int a, b; double g; };
     struct Cap { int a, b; double c, geq = 0, ieq = 0, vPrev = 0, iPrev = 0; };
     struct Ind { int a, b; double l, geq = 0, ieq = 0, vPrev = 0, iPrev = 0; };
     struct Bjt {
         int c, b, e;
-        double bf, is = 0, ise = 0, vt = 0, vcrit = 0;
+        bjt::Model<double> m;
         double vbe = 0, vbc = 0;   // limited junction voltages (SPICE-style state)
     };
-
-    static constexpr double BR = 5, NE = 1.5, ISE = 5e-14, XTI = 3, EG = 1.11;
-    static constexpr double TNOM = 300.15, KQ = 8.617333262e-5, GMIN = 1e-12;
 
     FuzzFaceParams p;
     double dt = 1.0 / 192000.0;
@@ -217,63 +311,18 @@ private:
 
     void updateTransistors()
     {
-        // ngspice bjttemp.c: IS and ISE scaled with XTI/EG, XTB = 0
-        const double T = p.tempC + 273.15;
-        const double vt = T * KQ;
-        const double ratio = T / TNOM;
-        const double factlog = (ratio - 1) * EG / vt + XTI * std::log(ratio);
-        const double is = p.isat * std::exp(factlog);
-        const double ise = ISE * std::exp(factlog / NE);
-        const double vcrit = vt * std::log(vt / (std::sqrt(2.0) * is));
         const double bfs[2] = { p.bf1, p.bf2 };
         bjt[0].c = C1; bjt[0].b = B1; bjt[0].e = GND;
         bjt[1].c = C2; bjt[1].b = C1; bjt[1].e = E2;
-        for (int i = 0; i < 2; ++i) {
-            bjt[i].bf = bfs[i];
-            bjt[i].is = is; bjt[i].ise = ise; bjt[i].vt = vt; bjt[i].vcrit = vcrit;
-        }
+        for (int i = 0; i < 2; ++i) bjt[i].m = bjt::model(p.isat, bfs[i], p.vaf, p.tempC);
     }
 
-    // SPICE junction limiting; returns true if vnew had to be limited
-    static bool pnjlim(double& vnew, double vold, double vt, double vcrit)
-    {
-        if (vnew > vcrit && std::abs(vnew - vold) > 2 * vt) {
-            if (vold > 0) {
-                const double arg = 1 + (vnew - vold) / vt;
-                vnew = arg > 0 ? vold + vt * std::log(arg) : vcrit;
-            } else {
-                vnew = vt * std::log(vnew / vt);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    // Gummel-Poon subset evaluated at the device's (limited) junction voltages,
-    // stamped as a linearised companion into A/rhs. Mirrors ngspice bjtload.c.
+    // Transistor linearised at its (limited) junction voltages and stamped as a
+    // companion into A/rhs.
     void stampBjt(const Bjt& q, Vec<N * N>& A, Vec<N>& rhs) const
     {
-        const double vbe = q.vbe, vbc = q.vbc, vt = q.vt;
-        const double evbe = std::exp(std::min(vbe / vt, 80.0));
-        const double evbc = std::exp(std::min(vbc / vt, 80.0));
-        const double cbe = q.is * (evbe - 1) + GMIN * vbe;
-        const double gbe = q.is * evbe / vt + GMIN;
-        const double cbc = q.is * (evbc - 1) + GMIN * vbc;
-        const double gbc = q.is * evbc / vt + GMIN;
-        const double eben = std::exp(std::min(vbe / (NE * vt), 80.0));
-        const double cben = q.ise * (eben - 1);
-        const double gben = q.ise * eben / (NE * vt);
-
-        const double q1 = 1.0 / (1.0 - vbc / p.vaf);
-        const double qb = q1;
-        const double dqbdvc = q1 * qb / p.vaf;
-
-        const double ic = (cbe - cbc) / qb - cbc / BR;
-        const double ib = cbe / q.bf + cben + cbc / BR;
-        const double gm = gbe / qb;
-        const double go = (gbc + (cbe - cbc) * dqbdvc / qb) / qb;
-        const double gpi = gbe / q.bf + gben;
-        const double gmu = gbc / BR;
+        const double vbe = q.vbe, vbc = q.vbc;
+        const auto e = bjt::evaluate(q.m, vbe, vbc);
 
         // terminal current leaving node x: i0 + dVbe*(vB-vE) + dVbc*(vB-vC)
         auto row = [&](int n, double i0, double dVbe, double dVbc) {
@@ -283,11 +332,9 @@ private:
             if (q.c != GND) A[n * N + q.c] -= dVbc;
             rhs[n] -= i0 - dVbe * vbe - dVbc * vbc;
         };
-        const double dicVbe = gm, dicVbc = -go - gmu;
-        const double dibVbe = gpi, dibVbc = gmu;
-        row(q.c, ic, dicVbe, dicVbc);
-        row(q.b, ib, dibVbe, dibVbc);
-        row(q.e, -(ic + ib), -(dicVbe + dibVbe), -(dicVbc + dibVbc));
+        row(q.c, e.ic, e.dicVbe, e.dicVbc);
+        row(q.b, e.ib, e.dibVbe, e.dibVbc);
+        row(q.e, -(e.ic + e.ib), -(e.dicVbe + e.dibVbe), -(e.dicVbc + e.dibVbc));
     }
 
     // Gaussian elimination with partial pivoting, in place; result in rhs.
@@ -338,8 +385,8 @@ private:
             bool limited = false;
             for (auto& q : bjt) {
                 double vbe = v(q.b) - v(q.e), vbc = v(q.b) - v(q.c);
-                limited |= pnjlim(vbe, q.vbe, q.vt, q.vcrit);
-                limited |= pnjlim(vbc, q.vbc, q.vt, q.vcrit);
+                limited |= bjt::pnjlim(vbe, q.vbe, q.m.vt, q.m.vcrit);
+                limited |= bjt::pnjlim(vbc, q.vbc, q.m.vt, q.m.vcrit);
                 q.vbe = vbe; q.vbc = vbc;
             }
             if (dx < 1.0 && !limited) break;

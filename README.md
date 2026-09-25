@@ -7,7 +7,8 @@ transistors and automate all of it.
 A monorepo: one shared circuit core, one folder per product.
 
 ```
-core/circuit/        FuzzFace.h (realtime solver: MNA + trapezoidal + Newton, no JUCE)
+core/circuit/        FuzzFaceDK.h (realtime solver: nodal DK method, double or float, no JUCE/heap)
+                     FuzzFace.h (reference MNA solver + shared transistor model; DC operating point)
                      Knobs.h (full control surface: ranges/curves/presets -> circuit values)
 core/engine/         FuzzEngine: the shared audio path (4x oversampling, smoothing, telemetry)
 core/ui/             CircuitView: live schematic (node voltages, signal glow, damage in red)
@@ -15,7 +16,8 @@ products/workbench/  Circuit Decimator plugin (every component knob) + Circuit B
 products/phys-fuzz/  Phys Fuzz plugin: Battery / Age / Temperature macros over the core
 sim/                 ngspice deck (the circuit spec), reference renders, solver-vs-ngspice check
 search/              MAP-Elites sound search over the knob space
-tools/               ff_render, libfuzzface (C API for Python), plugin_render (headless VST3 host)
+tools/               ff_render, libfuzzface (C API for Python), plugin_render (headless VST3 host),
+                     embedded/ (float core behind a C API; Cortex-M7 compile + codegen check)
 ```
 
 A product is a thin JUCE target: its own knob table (a `cd::Knob` array), a
@@ -91,7 +93,32 @@ gain, cold bias drift), Temperature, Output. The mapping lives in
 `products/phys-fuzz/Macros.h` and is a first pass for tuning by ear; it's also
 exposed through libfuzzface so the search tools can sweep it.
 
+## Solvers
+
+Two solvers share one transistor model (`bjt::` in FuzzFace.h):
+
+- **FuzzFaceDK** (what the plugins run): nodal DK method. The linear network is
+  folded into small precomputed matrices whenever a knob moves, so each sample
+  is a 4x4 Newton solve on the junction voltages plus a few matrix-vector
+  products. ~26x realtime at 4x oversampling on desktop, 3.5x the MNA solver.
+  `FuzzFaceDKf` is the single-precision version for microcontrollers.
+- **FuzzFace**: plain MNA, 11x11 solve per Newton step. The readable reference,
+  and it finds the DC operating point for both.
+
+They take identical Newton steps: DK matches MNA to 0.005% RMS, float DK to
+~1.5% RMS with the same envelope (0.004 dB) and spectrum (0.02 dB). Compare with
+`build/ff_render input.txt out.dat --solver mna|dk|dkf`.
+
+## Hardware (Daisy Seed / Teensy 4)
+
+`tools/embedded/fuzz_m7.cpp` puts `FuzzFaceDKf` behind a C API
+(`cd_fuzz_init / cd_fuzz_set / cd_fuzz_process`) for a libDaisy or Teensy Audio
+wrapper. `make -C tools/embedded ARM_GCC=<arm-none-eabi bin dir>` builds it for
+Cortex-M7 with hardware FPU and checks that the per-sample path has no
+double-precision instructions (currently: 0). Not yet run on hardware; the
+estimate is roughly a third of a Daisy's CPU at 2x oversampling (96 kHz).
+
 ## Changing the circuit
 
-The deck is the spec. `core/circuit/FuzzFace.h` mirrors its topology, values and
+The deck is the spec. `core/circuit/FuzzFace.h` (and so FuzzFaceDK.h) mirrors its topology, values and
 transistor model by hand, so change both together and re-run `compare.py`.

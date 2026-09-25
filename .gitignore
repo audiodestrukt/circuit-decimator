@@ -10,3 +10,4 @@ search/runs/
 
 __pycache__/
 *.pyc
+tools/embedded/*.elf

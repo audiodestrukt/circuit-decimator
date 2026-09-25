@@ -4,7 +4,7 @@
 // a FuzzFaceParams, so they can't drift apart. No JUCE dependency.
 #pragma once
 
-#include "FuzzFace.h"
+#include "FuzzFaceDK.h"
 
 #include <algorithm>
 #include <cmath>

@@ -117,6 +117,7 @@ void FuzzEngine::processChunk(juce::AudioBuffer<float>& buffer, int start, int n
         x[i] = (float) circuit.process(x[i] * kPickupVolts);
         iterSum += circuit.lastIterations;
         iterMax = juce::jmax(iterMax, circuit.lastIterations);
+        if ((i & 3) != 0) continue;   // telemetry at 1/4 of the oversampled rate is plenty
         for (int k = 0; k < kNodes; ++k) {
             const double v = circuit.node((FuzzFace::Node) k);
             sum[(size_t) k] += v;
@@ -126,7 +127,7 @@ void FuzzEngine::processChunk(juce::AudioBuffer<float>& buffer, int start, int n
     }
     if (nUp > 0) {
         for (size_t k = 0; k < (size_t) kNodes; ++k) {
-            nodeMean[k] = (float) (sum[k] / nUp);
+            nodeMean[k] = (float) (sum[k] / ((nUp + 3) / 4));
             nodeMin[k] = (float) lo[k];
             nodeMax[k] = (float) hi[k];
         }

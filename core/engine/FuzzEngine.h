@@ -1,5 +1,5 @@
 // FuzzEngine -- the realtime audio path every product shares: mono sum ->
-// pickup -> circuit solver at 4x oversampling -> DC block -> output, with
+// pickup -> DK circuit solver at 4x oversampling -> DC block -> output, with
 // per-parameter smoothing, solver health stats and node telemetry for the
 // circuit view. Products own their parameters and hand the engine a full
 // knob vector (core/circuit/Knobs.h order, in knob units) each block.
@@ -43,7 +43,7 @@ private:
 
     int maxBlock = 512;
     std::atomic<bool> resetRequested { false };
-    FuzzFace circuit;
+    FuzzFaceDK circuit;   // realtime DK solver (FuzzFace.h is its reference)
     FuzzFaceParams target;
     juce::dsp::Oversampling<float> oversampling { 1, osFactorLog2,
         juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true };
