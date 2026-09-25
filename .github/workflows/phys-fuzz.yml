@@ -16,6 +16,12 @@ on:
     tags:
       - 'phys-fuzz-v*'
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Which platforms to build (tags always build all; macOS minutes cost 10x here)'
+        type: choice
+        default: all
+        options: [all, macOS, Windows, Linux]
 
 permissions:
   contents: write   # create the draft release on tags
@@ -27,14 +33,24 @@ env:
   TARGET: PhysFuzz
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          ALL='[{"os":"macos-15","platform":"macOS"},{"os":"windows-2022","platform":"Windows"},{"os":"ubuntu-24.04","platform":"Linux"}]'
+          WANT="${{ inputs.platforms }}"
+          if [[ -z "$WANT" || "$WANT" == all ]]; then M="$ALL"
+          else M=$(echo "$ALL" | jq -c --arg p "$WANT" 'map(select(.platform == $p))'); fi
+          echo "matrix={\"include\":$M}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: macos-15,     platform: macOS }
-          - { os: windows-2022, platform: Windows }
-          - { os: ubuntu-24.04, platform: Linux }
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -55,13 +71,15 @@ jobs:
       - name: Clone JUCE
         run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git JUCE
 
+      # JUCE/docs/Linux Dependencies.md, minus what JUCE_WEB_BROWSER=0 / JUCE_USE_CURL=0 / JUCE_JACK=0 drop
       - name: Linux build dependencies
         if: matrix.platform == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build xvfb \
             libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev \
-            libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libgl1-mesa-dev
+            libxcursor-dev libxext-dev libxi-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev libegl-dev
 
       - name: Configure
         run: |
