@@ -1,0 +1,12 @@
+# JUCE is cloned locally (see README), not vendored
+JUCE/
+build/
+cmake-build-*/
+
+# generated audio/plots: re-create with sim/render.py, search/explore.py, tools/plugin_render
+sim/renders/
+renders_plugin/
+search/runs/
+
+__pycache__/
+*.pyc

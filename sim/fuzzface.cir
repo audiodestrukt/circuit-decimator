@@ -1,0 +1,88 @@
+* Fuzz Face (silicon NPN, BC108-style, 9 V) -- parametric, destroy-able.
+* Source of truth for the circuit. render.py rewrites the .param / .options
+* defaults below and the tran/wrdata lines in .control; nothing else.
+*
+*  vp --8k2-- tap --470-- c2          vp --33k-- c1
+*              |           |                     |
+*            Cout        Q2 (b=c1)            Q1 (b=b1, e=gnd)
+*              |           |
+*        volume pot       e2 --1k fuzz pot (wiper -> 20u) -- gnd
+*                          |
+*                   100k feedback -> b1
+
+* ---- destroy knobs -------------------------------------------------------
+* supply: battery EMF, internal resistance (dying battery), bulk cap
+.param vcc=9 rbat=1 cbulk=100n
+* guitar pickup: source R, coil L, pickup+cable C
+.param rsrc=6k lpu=2.5 ccab=500p
+* input coupling cap and its leakage (a failing electrolytic)
+.param cin=2.2u rleak_cin=1e12
+* bias network (rc2b = the classic Q2 bias trimmer; lower = higher Vc2)
+.param rc1=33k rc2a=470 rc2b=5.6k rfb=100k
+* fuzz pot (0..1, 1 = full bypass = max gain) and its bypass cap
+.param fuzz=1 rfuzz=1k cfz=20u
+* output coupling, volume pot (0..1), amp input
+.param cout=10n vol=0.5 rvol=500k rload=1meg
+* transistors: current gain, saturation current, Early voltage,
+* collector-base leakage (low = germanium-ish / cooked junction)
+.param bf1=250 bf2=250 isat=1e-14 vaf=80
+.param rleak1=1e12 rleak2=1e12
+.options temp=27
+
+* ---- audio in (XSPICE file source: "time value" per line) ----------------
+A1 %vd([src 0]) insrc
+.model insrc filesource (file="input.txt" amploffset=[0] amplscale=[1]
++ timeoffset=0 timescale=1 timerelative=false amplstep=false)
+
+* ---- supply --------------------------------------------------------------
+Vbat bat 0 {vcc}
+Rbat bat vp {rbat}
+Cbulk vp 0 {cbulk}
+
+* ---- pickup --------------------------------------------------------------
+Rsrc src p1 {rsrc}
+Lpu p1 gin {lpu}
+Ccab gin 0 {ccab}
+
+* ---- input stage ---------------------------------------------------------
+Cin gin b1 {cin}
+Rlkcin gin b1 {rleak_cin}
+Q1 c1 b1 0 QA
+Rlk1 c1 b1 {rleak1}
+Rc1 vp c1 {rc1}
+
+* ---- second stage --------------------------------------------------------
+Q2 c2 c1 e2 QB
+Rlk2 c2 c1 {rleak2}
+Rc2a c2 tap {rc2a}
+Rc2b tap vp {rc2b}
+Rfb e2 b1 {rfb}
+* fuzz pot as emitter resistor; wiper -> bypass cap
+Rfztop e2 fzw {max((1-fuzz)*rfuzz, 1)}
+Rfzbot fzw 0 {max(fuzz*rfuzz, 1)}
+Cfz fzw 0 {cfz}
+
+* ---- output --------------------------------------------------------------
+Cout tap o1 {cout}
+Rvtop o1 out {max((1-vol)*rvol, 1)}
+Rvbot out 0 {max(vol*rvol, 1)}
+Rload out 0 {rload}
+
+* Gummel-Poon subset, kept identical to core/circuit/FuzzFace.h (the realtime solver):
+* IS BF BR VAF ISE NE + XTI/EG temperature scaling. No RB/RC/RE or junction
+* caps -- they act far above the audio band and the solver omits them.
+.model QA NPN(IS={isat} BF={bf1} VAF={vaf} BR=5 NE=1.5 ISE=5e-14)
+.model QB NPN(IS={isat} BF={bf2} VAF={vaf} BR=5 NE=1.5 ISE=5e-14)
+
+.options interp
+.control
+set wr_singlescale
+set wr_vecnames
+* bias point first (reported by render.py as a sanity gate)
+op
+print v(vp) v(b1) v(c1) v(e2) v(c2)
+tran 20.8333u 1 0 20.8333u
+wrdata out.dat v(out) v(vp) v(c2)
+quit
+.endc
+.end
