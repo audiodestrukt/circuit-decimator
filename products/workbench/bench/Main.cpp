@@ -6,11 +6,16 @@
 // processor's programs, plus any search results loaded with "Load search..."
 // (search/runs/*/elites.json); "Power cycle" re-solves the circuit's DC state.
 //
-//   Circuit Bench [file.wav] [search/runs/<name>/elites.json] [--play] [--mute] [--program N]
+//   Circuit Bench [file.wav] [search/runs/<name>/elites.json] [--play] [--mute] [--program N] [--circuit N]
+//
+// Circuit menu: the fuzz workbench (knobs, schematic, presets, search results),
+// or any netlist circuit from core/circuit/circuits/Catalog.h with every
+// component as a knob, a node meter and (if it has a core) the B-H loop.
 //
 // --mute runs everything but sends silence to the device (headless demos/tests).
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "NetControls.h"
 #include "PluginProcessor.h"
 #include "ui/CircuitView.h"
 
@@ -86,6 +91,20 @@ public:
         sourceBox.setSelectedId(1, juce::dontSendNotification);
         addAndMakeVisible(sourceBox);
 
+        circuitBox.addItem("Fuzz workbench", 1);
+        {
+            const auto names = cd::catalog::names();
+            for (size_t k = 0; k < names.size(); ++k) circuitBox.addItem(names[k], (int) k + 2);
+        }
+        circuitBox.setSelectedId(1, juce::dontSendNotification);
+        circuitBox.onChange = [this] { selectCircuit(circuitBox.getSelectedId() - 1); };
+        addAndMakeVisible(circuitBox);
+        addChildComponent(meter);
+        addChildComponent(loopView);
+        controlsViewport.setViewedComponent(&netControls, false);
+        controlsViewport.setScrollBarsShown(true, false);
+        addChildComponent(controlsViewport);
+
         rebuildPresetBox();
         presetBox.setSelectedId(1, juce::dontSendNotification);
         presetBox.setTextWhenNothingSelected("Preset");
@@ -108,7 +127,10 @@ public:
             updatePlayButton();
         };
         bypassButton.onClick = [this] { bypass = bypassButton.getToggleState(); };
-        resetButton.onClick = [this] { processor.engine.requestCircuitReset(); };
+        resetButton.onClick = [this] {
+            if (mode == 0) processor.engine.requestCircuitReset();
+            else net.requestWarmStart();
+        };
         audioButton.onClick = [this] { showAudioSettings(); };
         sourceBox.onChange = [this] { liveInput = sourceBox.getSelectedId() == 2; };
         presetBox.onChange = [this] {
@@ -131,12 +153,13 @@ public:
         juce::StringArray args;
         args.addTokens(commandLine, true);
         bool play = false;
-        int program = -1;
+        int program = -1, circuit = 0;
         for (int i = 0; i < args.size(); ++i) {
             const auto a = args[i].unquoted();
             if (a == "--play") { play = true; continue; }
             if (a == "--mute") { muted = true; continue; }
             if (a == "--program" && i + 1 < args.size()) { program = args[++i].getIntValue(); continue; }
+            if (a == "--circuit" && i + 1 < args.size()) { circuit = args[++i].getIntValue(); continue; }
             const auto f = juce::File::getCurrentWorkingDirectory().getChildFile(a);
             if (f.hasFileExtension("json")) search = f; else if (a.isNotEmpty()) initial = f;
         }
@@ -148,6 +171,7 @@ public:
 
         startTimerHz(10);
         setSize(1380, 860);
+        if (circuit > 0) circuitBox.setSelectedId(circuit + 1);   // triggers selectCircuit
     }
 
     ~Bench() override
@@ -169,16 +193,28 @@ public:
         }
         sourceBox.setBounds(row.removeFromLeft(110));
         row.removeFromLeft(6);
+        circuitBox.setBounds(row.removeFromLeft(230));
+        row.removeFromLeft(6);
         presetBox.setBounds(row);
         r.removeFromTop(6);
         fileLabel.setBounds(r.removeFromTop(20));
         statsLabel.setBounds(r.removeFromTop(20));
         r.removeFromTop(4);
-        editor->setBounds(r.removeFromRight(420));
+        auto side = r.removeFromRight(420);
+        editor->setBounds(side);
+        controlsViewport.setBounds(side);
+        netControls.setSize(side.getWidth() - controlsViewport.getScrollBarThickness(), netControls.getHeight());
         r.removeFromRight(8);
         scope.setBounds(r.removeFromBottom(140));
         r.removeFromBottom(8);
         circuitView.setBounds(r);
+        if (net.uiHasCore) {
+            meter.setBounds(r.removeFromLeft(r.getWidth() / 2 - 4));
+            r.removeFromLeft(8);
+            loopView.setBounds(r);
+        } else {
+            meter.setBounds(r);
+        }
     }
 
     // ---- audio ----------------------------------------------------------
@@ -190,6 +226,7 @@ public:
         transport.prepareToPlay(bs, sr);
         processor.setPlayConfigDetails(2, 2, sr, bs);
         processor.prepareToPlay(sr, bs);
+        net.prepare(sr, bs);
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* in, int numIn, float* const* out, int numOut,
@@ -207,7 +244,10 @@ public:
             juce::AudioSourceChannelInfo info(&work, 0, n);
             transport.getNextAudioBlock(info);
         }
-        if (!bypass) processor.processBlock(work, midi);
+        if (!bypass) {
+            if (mode == 0) processor.processBlock(work, midi);
+            else net.process(work, n);
+        }
         scope.push(work.getReadPointer(0), n);
         for (int c = 0; c < numOut; ++c) {
             if (out[c] == nullptr) continue;
@@ -308,6 +348,26 @@ private:
         if (showMenu) presetBox.showPopup();
     }
 
+    // 0 = the fuzz workbench; k > 0 = netlist circuit k-1 from the catalog
+    void selectCircuit(int m)
+    {
+        if (m > 0) {
+            net.select(m - 1);
+            netControls.setControls(net.uiControls);
+            meter.setProbes(net.uiProbes);
+        }
+        mode = m;
+        const bool fuzz = m == 0;
+        circuitView.setVisible(fuzz);
+        editor->setVisible(fuzz);
+        presetBox.setEnabled(fuzz);
+        searchButton.setEnabled(fuzz);
+        meter.setVisible(!fuzz);
+        loopView.setVisible(!fuzz && net.uiHasCore);
+        controlsViewport.setVisible(!fuzz);
+        resized();
+    }
+
     void rebuildPresetBox()
     {
         presetBox.clear(juce::dontSendNotification);
@@ -333,12 +393,15 @@ private:
 
     void timerCallback() override
     {
-        statsLabel.setText((searchLabel.isEmpty() ? juce::String() : searchLabel + "   |   ")
-                               + juce::String::formatted(
-                               "CPU %.1f%%   Newton avg %.2f / max %d   solver failures %ld   latency %d smp",
-                               deviceManager.getCpuUsage() * 100.0, processor.engine.newtonAverage.load(),
-                               processor.engine.newtonMax.load(), processor.engine.solverFailures.load(),
-                               processor.getLatencySamples()),
+        net.collect();
+        const float newton = mode == 0 ? processor.engine.newtonAverage.load() : net.newtonAverage.load();
+        const int newtonMax = mode == 0 ? processor.engine.newtonMax.load() : 0;
+        const long fails = mode == 0 ? processor.engine.solverFailures.load() : net.failures.load();
+        statsLabel.setText((mode == 0 && searchLabel.isNotEmpty() ? searchLabel + "   |   " : juce::String())
+                               + juce::String::formatted("CPU %.1f%%   Newton avg %.2f%s   solver failures %ld",
+                                                         deviceManager.getCpuUsage() * 100.0, newton,
+                                                         mode == 0 ? juce::String::formatted(" / max %d", newtonMax).toRawUTF8() : "",
+                                                         fails),
                            juce::dontSendNotification);
         // follow program changes made elsewhere (not while a search result is selected)
         const int sel = presetBox.getSelectedId();
@@ -365,6 +428,13 @@ private:
     juce::Label fileLabel, statsLabel;
     Scope scope;
     CircuitView circuitView { processor.engine };
+    NetBench net;
+    std::atomic<int> mode { 0 };
+    juce::ComboBox circuitBox;
+    cd::ui::NodeMeterView meter { net.probes };
+    cd::ui::BHLoopView loopView { net.trace };
+    NetControls netControls { net };
+    juce::Viewport controlsViewport;
     std::unique_ptr<juce::AudioProcessorEditor> editor;
     std::unique_ptr<juce::FileChooser> chooser;
 };

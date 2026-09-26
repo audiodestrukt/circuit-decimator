@@ -1,0 +1,7 @@
+Iron (Windows)
+
+Copy the "Iron.vst3" folder into:
+
+  C:\Program Files\Common Files\VST3\
+
+then rescan plugins in your DAW. 64-bit VST3 hosts only.

@@ -14,6 +14,7 @@ core/engine/         FuzzEngine: the shared audio path (4x oversampling, smoothi
 core/ui/             CircuitView: live schematic (node voltages, signal glow, damage in red)
 products/workbench/  Circuit Decimator plugin (every component knob) + Circuit Bench app
 products/phys-fuzz/  Phys Fuzz plugin: Battery / Age / Temperature macros over the core
+products/iron/       Iron plugin: tube line stage into a gapped single-ended output transformer
 sim/                 ngspice deck (the circuit spec), reference renders, solver-vs-ngspice check
 search/              MAP-Elites sound search over the knob space
 tools/               ff_render, libfuzzface (C API for Python), plugin_render (headless VST3 host),
@@ -46,7 +47,17 @@ Bypass A/Bs the dry signal, the preset menu holds the destroy presets, and
 "Power cycle" re-solves the circuit's DC state after you've biased it to death.
 The stats line shows CPU, Newton iterations per sample and solver failures.
 
-The schematic is live: wire colour is each node's voltage (blue 0 V to amber
+The **Circuit** menu switches between the fuzz workbench and the netlist
+circuits (tube mic pre, single-ended output stage = Iron's circuit, mic
+transformer). For those, every component is a knob in a scrolling panel
+(transformer ratio, leakage, DCR, capacitances, load; core turns, area, path,
+gap and Jiles-Atherton steel; tube stage resistors, caps, B+ and the Koren curve),
+applied live without losing the circuit's state. A node meter shows each probe
+node's DC voltage and signal swing, and circuits with a core show the live B-H
+loop. `--circuit N` opens one directly (1 tube pre, 2 SE output, 3 mic
+transformer). Circuits live in `core/circuit/circuits/Catalog.h`.
+
+For the fuzz workbench, the schematic is live: wire colour is each node's voltage (blue 0 V to amber
 9 V), a green glow shows where the signal swings, parts turn red as their knob
 leaves healthy, leakage appears as dashed resistors, and Q2's state (biased /
 saturated / cut off) is called out. The VST3's editor shows the same view.
@@ -103,7 +114,39 @@ gain, cold bias drift), Temperature, Output. The mapping lives in
 `products/phys-fuzz/Macros.h` and is a first pass for tuning by ear; it's also
 exposed through libfuzzface so the search tools can sweep it.
 
+## Iron
+
+![Iron](products/iron/screenshots/blown.png)
+
+A tube line stage (12AU7) into a single-ended, gapped output transformer: the
+`sim/tubeout` circuit, verified against ngspice, running as a netlist on the
+general engine (stereo, 4x oversampling, ~7x realtime). The knobs describe the
+iron: **Drive** (how hard it's hit; output auto-compensated so it changes
+colour, not level), **Gap** (DC bias on the core: less gap = fatter, grittier
+lows), **Core** (size: smaller saturates sooner), **Steel** (premium to scrap:
+more hysteresis), plus Output and a latency-aligned Mix. **Cold start** power-
+cycles the stage with a fast supply ramp: a thump, and the core settles with a
+different remanent flux.
+
+The editor draws the transformer as its physical core (thickness = Core, slit =
+Gap, colour = Steel, brightness = flux) inside the stage schematic, next to the
+live B-H loop (zoomed on the loop, with a full-range inset showing where it sits
+relative to saturation). Screenshots: `iron_snapshot out.png in.wav --program N`.
+
+Releases: `git tag iron-vX.Y.Z` (the workflow builds whichever product the tag names).
+
 ## Solvers
+
+**General engine** (`core/circuit/Circuit.h`, devices in `Devices.h`): describe
+a circuit as a netlist (R, C, L, voltage sources, ideal transformers, and
+nonlinear devices: BJT, Koren triode, Jiles-Atherton transformer core) and it
+derives the realtime DK solver automatically. It reproduces the hand-built
+solvers (`build/net_selftest`: transformer to 1e-9, fuzz to 2e-5 RMS) and runs
+the tube mic pre in `sim/tubepre` and a single-ended output transformer stage
+in `sim/tubeout` (circuits in `core/circuit/circuits/`, run any by name with
+`build/circuit_render`). The transformer core device has an air gap and starts
+magnetized by any DC it carries. New circuits should be netlists; the
+hand-built solvers below stay as references.
 
 Two solvers share one transistor model (`bjt::` in FuzzFace.h):
 

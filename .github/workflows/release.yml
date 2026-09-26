@@ -1,12 +1,13 @@
-name: Phys Fuzz builds
+name: Product builds
 
-# Builds Phys Fuzz for macOS (VST3 + AU, universal), Windows (VST3) and Linux
-# (VST3), validates each with pluginval (and auval on macOS), and packages one
-# zip per platform. This repo is private, so macOS runner minutes bill at 10x:
-# it only runs on a release tag or by hand.
+# Builds one product (Phys Fuzz or Iron) for macOS (VST3 + AU, universal),
+# Windows (VST3) and Linux (VST3), validates each with pluginval (and auval on
+# macOS), and packages one zip per platform. This repo is private, so macOS
+# runner minutes bill at 10x: it only runs on a release tag or by hand.
 #
-#   git tag phys-fuzz-v0.1.0 && git push origin phys-fuzz-v0.1.0   ->  draft GitHub release with the zips
-#   Actions -> Phys Fuzz builds -> Run workflow                     ->  zips as workflow artifacts
+#   git tag phys-fuzz-v0.1.0 && git push origin phys-fuzz-v0.1.0   ->  draft release: Phys Fuzz
+#   git tag iron-v0.1.0 && git push origin iron-v0.1.0             ->  draft release: Iron
+#   Actions -> Product builds -> Run workflow                       ->  zips as workflow artifacts
 #
 # macOS signing + notarization run only when the secrets exist (see the
 # "Sign and notarize" step); without them the macOS zip is unsigned and
@@ -15,8 +16,14 @@ on:
   push:
     tags:
       - 'phys-fuzz-v*'
+      - 'iron-v*'
   workflow_dispatch:
     inputs:
+      product:
+        description: 'Which product to build'
+        type: choice
+        default: phys-fuzz
+        options: [phys-fuzz, iron]
       platforms:
         description: 'Which platforms to build (tags always build all; macOS minutes cost 10x here)'
         type: choice
@@ -29,15 +36,32 @@ permissions:
 env:
   # JUCE is cloned locally, not vendored: pin the version this is developed against.
   JUCE_VERSION: 9.0.2
-  PRODUCT: Phys Fuzz
-  TARGET: PhysFuzz
 
 jobs:
   plan:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      slug: ${{ steps.p.outputs.slug }}
+      product: ${{ steps.p.outputs.product }}
+      target: ${{ steps.p.outputs.target }}
+      version: ${{ steps.p.outputs.version }}
+      auval: ${{ steps.p.outputs.auval }}
     steps:
+      # product from the tag prefix (or the manual choice): folder, display name,
+      # CMake target, version, and the AU type/subtype/manufacturer for auval
+      - id: p
+        run: |
+          REF="${{ github.ref_name }}"
+          if [[ "${{ github.ref_type }}" == tag ]]; then SLUG="${REF%-v*}"; VERSION="${REF##*-v}"
+          else SLUG="${{ inputs.product }}"; VERSION="0.0.0"; fi
+          case "$SLUG" in
+            phys-fuzz) PRODUCT="Phys Fuzz"; TARGET=PhysFuzz; AUVAL="aufx Phfz Adst" ;;
+            iron)      PRODUCT="Iron";      TARGET=Iron;     AUVAL="aufx Iron Adst" ;;
+            *) echo "::error::unknown product $SLUG"; exit 1 ;;
+          esac
+          { echo "slug=$SLUG"; echo "product=$PRODUCT"; echo "target=$TARGET"; echo "version=$VERSION"; echo "auval=$AUVAL"; } >> "$GITHUB_OUTPUT"
+          echo "Building $PRODUCT $VERSION"
       - id: m
         run: |
           ALL='[{"os":"macos-15","platform":"macOS"},{"os":"windows-2022","platform":"Windows"},{"os":"ubuntu-24.04","platform":"Linux"}]'
@@ -56,17 +80,15 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      SLUG: ${{ needs.plan.outputs.slug }}
+      PRODUCT: ${{ needs.plan.outputs.product }}
+      TARGET: ${{ needs.plan.outputs.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      AUVAL: ${{ needs.plan.outputs.auval }}
 
     steps:
       - uses: actions/checkout@v4.2.2
-
-      - name: Version from tag
-        id: ver
-        run: |
-          REF="${{ github.ref_name }}"
-          if [[ "$REF" == phys-fuzz-v* ]]; then VERSION="${REF#phys-fuzz-v}"; else VERSION="0.0.0"; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building $PRODUCT $VERSION"
 
       - name: Clone JUCE
         run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git JUCE
@@ -83,7 +105,7 @@ jobs:
 
       - name: Configure
         run: |
-          ARGS=(-DCMAKE_BUILD_TYPE=Release -DCD_VERSION="${{ steps.ver.outputs.version }}"
+          ARGS=(-DCMAKE_BUILD_TYPE=Release -DCD_VERSION="$VERSION"
                 -DCD_COPY_PLUGINS=OFF -DCD_BUILD_TOOLS=OFF)
           case "${{ matrix.platform }}" in
             macOS)   cmake -B build "${ARGS[@]}" -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 ;;
@@ -96,7 +118,7 @@ jobs:
           TARGETS=(--target "${TARGET}_VST3")
           [[ "${{ matrix.platform }}" == macOS ]] && TARGETS+=(--target "${TARGET}_AU")
           cmake --build build --config Release --parallel 4 "${TARGETS[@]}"
-          echo "ART=build/products/phys-fuzz/${TARGET}_artefacts/Release" >> "$GITHUB_ENV"
+          echo "ART=build/products/$SLUG/${TARGET}_artefacts/Release" >> "$GITHUB_ENV"
 
       - name: pluginval (VST3)
         run: |
@@ -121,7 +143,7 @@ jobs:
           mkdir -p ~/Library/Audio/Plug-Ins/Components
           cp -R "$ART/AU/$PRODUCT.component" ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar 2>/dev/null || true
-          auval -v aufx Phfz Adst
+          auval -v $AUVAL
 
       # Needs repo secrets: MACOS_DEVID_P12_BASE64 / MACOS_DEVID_P12_PASSWORD (a
       # "Developer ID Application" certificate: not the App Store ones) and the
@@ -168,11 +190,11 @@ jobs:
 
       - name: Package
         run: |
-          NAME="PhysFuzz-${{ steps.ver.outputs.version }}-${{ matrix.platform }}"
+          NAME="$TARGET-$VERSION-${{ matrix.platform }}"
           mkdir -p "dist/$NAME"
           cp -R "$ART/VST3/$PRODUCT.vst3" "dist/$NAME/"
           [[ "${{ matrix.platform }}" == macOS ]] && cp -R "$ART/AU/$PRODUCT.component" "dist/$NAME/"
-          cp "products/phys-fuzz/packaging/INSTALL-${{ matrix.platform }}.txt" "dist/$NAME/INSTALL.txt"
+          cp "products/$SLUG/packaging/INSTALL-${{ matrix.platform }}.txt" "dist/$NAME/INSTALL.txt"
           cd dist
           case "${{ matrix.platform }}" in
             macOS)   ditto -c -k --keepParent "$NAME" "$NAME.zip" ;;   # keeps signatures + symlinks
@@ -183,13 +205,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PhysFuzz-${{ matrix.platform }}
+          name: ${{ env.TARGET }}-${{ matrix.platform }}
           path: ${{ env.ZIP }}
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/phys-fuzz-v')
-    needs: build
+    if: github.ref_type == 'tag'
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -201,5 +223,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" dist/*.zip --repo "${{ github.repository }}" \
-            --draft --title "Phys Fuzz ${GITHUB_REF_NAME#phys-fuzz-v}" \
+            --draft --title "${{ needs.plan.outputs.product }} ${{ needs.plan.outputs.version }}" \
             --notes "Built by CI. Check the macOS zip was signed (the workflow warns if not) before selling."
