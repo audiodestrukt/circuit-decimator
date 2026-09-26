@@ -11,6 +11,15 @@ const auto kGlow = juce::Colour(0xff7fd18b);
 const auto kDim = juce::Colour(0xff8a8f98);
 const auto kGround = juce::Colour(0xff5a5e66);
 
+// Board style: the materials of an old pedal's guts
+const auto kPhenolic = juce::Colour(0xff3a2618);
+const auto kCopper = juce::Colour(0xffe0915a);
+const auto kCopperHot = juce::Colour(0xfff6c79a);
+const auto kVerdigris = juce::Colour(0xff6fb8a0);
+const auto kSilk = juce::Colour(0xffe9e4d8);
+const auto kSolder = juce::Colour(0xffb9bdc2);
+const auto kScorch = juce::Colour(0xffff5a36);
+
 float clamp01(double v) { return (float) juce::jlimit(0.0, 1.0, v); }
 
 // how far a log-scaled knob sits from its healthy value, 0..1
@@ -25,6 +34,45 @@ CircuitView::CircuitView(cd::FuzzEngine& e) : engine(e)
 {
     setOpaque(true);
     startTimerHz(30);
+}
+
+void CircuitView::setStyle(Style s)
+{
+    style = s;
+    resized();
+    repaint();
+}
+
+void CircuitView::setPatina(float amount)
+{
+    patina = juce::jlimit(0.0f, 1.0f, amount);
+}
+
+void CircuitView::setTypeface(juce::Typeface::Ptr t)
+{
+    typeface = std::move(t);
+}
+
+// Phenolic board: warm brown with fibre speckle and a soft vignette, rendered
+// once per size so painting stays cheap.
+void CircuitView::resized()
+{
+    if (!board() || getWidth() <= 0 || getHeight() <= 0) { boardTexture = {}; return; }
+    boardTexture = juce::Image(juce::Image::RGB, getWidth(), getHeight(), true);
+    juce::Graphics g(boardTexture);
+    g.fillAll(kPhenolic);
+    juce::Random rng(1966);
+    const int specks = getWidth() * getHeight() / 30;
+    for (int i = 0; i < specks; ++i) {
+        const float x = rng.nextFloat() * (float) getWidth(), y = rng.nextFloat() * (float) getHeight();
+        g.setColour((rng.nextBool() ? juce::Colours::black : juce::Colour(0xffc08050)).withAlpha(0.05f + 0.07f * rng.nextFloat()));
+        g.fillRect(x, y, 1.0f + rng.nextFloat() * 2.0f, 1.0f);
+    }
+    const auto r = getLocalBounds().toFloat();
+    juce::ColourGradient vignette(juce::Colours::transparentBlack, r.getCentreX(), r.getCentreY(),
+                                  juce::Colours::black.withAlpha(0.45f), r.getX(), r.getY(), true);
+    g.setGradientFill(vignette);
+    g.fillRect(r);
 }
 
 void CircuitView::timerCallback()
@@ -53,7 +101,24 @@ juce::Colour CircuitView::voltageColour(float volts) const
 
 juce::Colour CircuitView::partColour(float damage) const
 {
-    return kPart.interpolatedWith(kHurt, damage);
+    return board() ? kSilk.withAlpha(0.88f).interpolatedWith(kScorch, damage) : kPart.interpolatedWith(kHurt, damage);
+}
+
+juce::Colour CircuitView::traceColour(int node) const
+{
+    const auto base = kCopper.interpolatedWith(kVerdigris, patina);
+    if (node == GND) return base.darker(0.35f);
+    return base.interpolatedWith(kCopperHot, clamp01(swing(node) / 1.5));
+}
+
+juce::Colour CircuitView::groundColour() const
+{
+    return board() ? kCopper.interpolatedWith(kVerdigris, patina).darker(0.35f) : kGround;
+}
+
+juce::Colour CircuitView::textColour() const
+{
+    return board() ? kSilk.withAlpha(0.7f) : kDim;
 }
 
 // ---------------------------------------------------------------- primitives
@@ -64,6 +129,17 @@ void CircuitView::wire(juce::Graphics& g, std::initializer_list<Pt> pts, int nod
     for (auto pt : pts) {
         if (first) p.startNewSubPath(pt); else p.lineTo(pt);
         first = false;
+    }
+    if (board()) {
+        // copper trace: warm bloom where the signal is, then the trace itself
+        const float s = node == GND ? 0.0f : clamp01(swing(node) / 1.5);
+        if (s > 0.02f) {
+            g.setColour(kCopperHot.withAlpha(0.10f + 0.30f * s));
+            g.strokePath(p, juce::PathStrokeType(6 + 14 * s, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setColour(traceColour(node));
+        g.strokePath(p, juce::PathStrokeType(5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        return;
     }
     if (node != GND) {
         const float s = clamp01(swing(node) / 2.0);
@@ -80,13 +156,22 @@ void CircuitView::wire(juce::Graphics& g, std::initializer_list<Pt> pts, int nod
 
 void CircuitView::dot(juce::Graphics& g, Pt p, int node) const
 {
+    if (board()) {   // solder joint on a pad
+        g.setColour(traceColour(node));
+        g.fillEllipse(p.x - 8, p.y - 8, 16, 16);
+        g.setColour(kSolder);
+        g.fillEllipse(p.x - 5.5f, p.y - 5.5f, 11, 11);
+        g.setColour(juce::Colours::white.withAlpha(0.5f));
+        g.fillEllipse(p.x - 3.5f, p.y - 3.5f, 3.5f, 3.5f);
+        return;
+    }
     g.setColour(node == GND ? kGround : voltageColour(mean(node)));
     g.fillEllipse(p.x - 4, p.y - 4, 8, 8);
 }
 
 void CircuitView::ground(juce::Graphics& g, Pt p) const
 {
-    g.setColour(kGround);
+    g.setColour(board() ? kSilk.withAlpha(0.6f) : kGround);
     g.drawLine(p.x, p.y, p.x, p.y + 10, 2);
     for (int i = 0; i < 3; ++i) {
         const float w = 14.0f - 5.0f * (float) i, y = p.y + 10 + 5.0f * (float) i;
@@ -108,9 +193,9 @@ void CircuitView::resistor(juce::Graphics& g, Pt a, Pt b, float damage, float al
     p.lineTo(a + u * (start + body));
     p.lineTo(b);
     const auto c = partColour(damage).withMultipliedAlpha(alpha);
-    if (damage > 0.3f) {
-        g.setColour(kHurt.withAlpha(0.25f * damage * alpha));
-        g.strokePath(p, juce::PathStrokeType(8));
+    if (damage > 0.3f) {   // scorch halo
+        g.setColour((board() ? kScorch : kHurt).withAlpha((board() ? 0.35f : 0.25f) * damage * alpha));
+        g.strokePath(p, juce::PathStrokeType(board() ? 12.0f : 8.0f));
     }
     g.setColour(c);
     juce::PathStrokeType st(2.2f);
@@ -146,7 +231,7 @@ void CircuitView::inductor(juce::Graphics& g, Pt a, Pt b) const
         const float x0 = a.x + dx * (float) i;
         p.cubicTo(x0, a.y - 14, x0 + dx, a.y - 14, x0 + dx, a.y);
     }
-    g.setColour(kPart);
+    g.setColour(partColour(0));
     g.strokePath(p, juce::PathStrokeType(2.2f));
 }
 
@@ -182,9 +267,9 @@ void CircuitView::battery(juce::Graphics& g, Pt top, Pt bottom, float damage) co
     g.drawLine(top.x - 20, mid + 8, top.x + 20, mid + 8, 3);
     // charge gauge
     const float charge = clamp01(knobs[cd::kBattery] / 12.0);
-    g.setColour(kDim);
+    g.setColour(textColour());
     g.drawRect(juce::Rectangle<float>(top.x + 30, mid - 24, 10, 48), 1.0f);
-    g.setColour(voltageColour((float) knobs[cd::kBattery]));
+    g.setColour(board() ? kCopper.interpolatedWith(kScorch, damage) : voltageColour((float) knobs[cd::kBattery]));
     g.fillRect(top.x + 31, mid + 23 - 46 * charge, 8.0f, 46 * charge);
 }
 
@@ -199,8 +284,8 @@ void CircuitView::wiper(juce::Graphics& g, Pt tip, Pt from, float damage) const
 void CircuitView::label(juce::Graphics& g, const juce::String& text, Pt p, float size, juce::Colour c,
                         juce::Justification just) const
 {
-    g.setColour(c.isTransparent() ? kDim : c);
-    g.setFont(juce::FontOptions(size));
+    g.setColour(c.isTransparent() ? textColour() : c);
+    g.setFont(typeface != nullptr ? juce::Font(juce::FontOptions(typeface).withHeight(size)) : juce::Font(juce::FontOptions(size)));
     const float w = 170;
     const float x = just.testFlags(juce::Justification::right) ? p.x - w
                     : just.testFlags(juce::Justification::horizontallyCentred) ? p.x - w / 2 : p.x;
@@ -210,7 +295,8 @@ void CircuitView::label(juce::Graphics& g, const juce::String& text, Pt p, float
 // ---------------------------------------------------------------- schematic
 void CircuitView::paint(juce::Graphics& g)
 {
-    g.fillAll(kBg);
+    if (board() && boardTexture.isValid()) g.drawImageAt(boardTexture, 0, 0);
+    else g.fillAll(kBg);
     scale = juce::jmin((float) getWidth() / kW, (float) getHeight() / kH);
     const float ox = ((float) getWidth() - kW * scale) / 2, oy = ((float) getHeight() - kH * scale) / 2;
     g.addTransform(juce::AffineTransform::scale(scale).translated(ox, oy));
@@ -232,8 +318,9 @@ void CircuitView::paint(juce::Graphics& g)
     // ---- supply rail + battery
     wire(g, { { 330, 40 }, { 830, 40 } }, N::VP);
     resistor(g, { 830, 40 }, { 920, 40 }, dSag);
-    g.setColour(voltageColour(vcc));  // battery + terminal: the EMF, before the sag resistor
-    g.drawLine(920, 40, 920, 170, 2.2f);
+    // battery + terminal: the EMF, before the sag resistor
+    if (board()) wire(g, { { 920, 40 }, { 920, 170 } }, N::VP);
+    else { g.setColour(voltageColour(vcc)); g.drawLine(920, 40, 920, 170, 2.2f); }
     battery(g, { 920, 170 }, { 920, 240 }, dBattery);
     wire(g, { { 920, 240 }, { 920, 280 } }, GND);
     ground(g, { 920, 280 });
@@ -242,9 +329,9 @@ void CircuitView::paint(juce::Graphics& g)
     dot(g, { 780, 40 }, N::VP);
 
     // ---- pickup + input
-    g.setColour(kPart);
+    g.setColour(partColour(0));
     g.drawEllipse(54, 424, 32, 32, 2.2f);
-    label(g, "~", { 70, 440 }, 20, kPart, juce::Justification::centred);
+    label(g, "~", { 70, 440 }, 20, partColour(0), juce::Justification::centred);
     wire(g, { { 70, 456 }, { 70, 490 } }, GND);
     ground(g, { 70, 490 });
     wire(g, { { 70, 424 }, { 70, 380 }, { 90, 380 } }, N::P1);
@@ -312,8 +399,30 @@ void CircuitView::paint(juce::Graphics& g)
     const float vy = 190 + (1 - (float) k[cd::kVolume]) * 70;
     wiper(g, { 710, vy }, { 750, vy }, 0);
     wire(g, { { 750, vy }, { 820, vy } }, N::OUT);
-    g.setColour(voltageColour(mean(N::OUT)));
-    g.drawEllipse(820, vy - 6, 12, 12, 2.2f);
+    if (board()) dot(g, { 826, vy }, N::OUT);
+    else { g.setColour(voltageColour(mean(N::OUT))); g.drawEllipse(820, vy - 6, 12, 12, 2.2f); }
+
+    if (board()) {
+        // silkscreen values, plus the two readouts a player cares about
+        const auto silk = kSilk.withAlpha(0.72f);
+        const auto hot = kScorch;
+        label(g, "33k", { 350, 150 }, 20, silk);
+        label(g, "470", { 508, 175 }, 20, silk);
+        label(g, "100k", { 355, 562 }, 20, silk, juce::Justification::centred);
+        label(g, juce::String::fromUTF8("2.2\xc2\xb5"), { 210, 418 }, 20, dCin > 0.3f ? hot : silk, juce::Justification::centred);
+        label(g, "10n", { 590, 110 }, 20, silk, juce::Justification::centred);
+        label(g, "Q1", { 354, 394 }, 24, dQ1 > 0.3f ? hot : silk);
+        label(g, "Q2", { 524, 258 }, 24, dQ2 > 0.3f ? hot : silk);
+        label(g, "out", { 846, vy }, 22, silk);
+        label(g, "in", { 38, 440 }, 22, silk, juce::Justification::right);
+        label(g, juce::String(mean(N::VP), 1) + " V", { 900, 135 }, 26, dBattery > 0.3f ? hot : silk.withAlpha(0.95f),
+              juce::Justification::right);
+        const float vce = mean(N::C2) - mean(N::E2), headroom = mean(N::VP) - mean(N::C2);
+        const bool starved = vce < 0.3f, cut = headroom < 0.15f * juce::jmax(0.5f, mean(N::VP));
+        if (starved || cut)
+            label(g, starved ? "Q2 starved" : "Q2 cut off", { 524, 286 }, 20, hot);
+        return;
+    }
 
     // ---- values
     const auto val = juce::Colour(0xffb8bcc4);

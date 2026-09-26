@@ -87,6 +87,16 @@ Parameter names for `plugin_render` are the display names without spaces
 
 ## Phys Fuzz
 
+![Phys Fuzz](products/phys-fuzz/screenshots/barn-find.png)
+
+The editor is the pedal with its lid off: copper traces on phenolic board that
+brighten where the signal is, turn verdigris with Age, and scorch where parts
+are failing. Condition knobs sit under the board; the playing knobs and level
+run down the right. Fonts: Michroma and Barlow (SIL OFL, in
+`products/phys-fuzz/assets/fonts`). Regenerate screenshots with
+`physfuzz_snapshot out.png sim/renders/input.wav --program N` (under xvfb-run on
+a headless box).
+
 Six knobs: Fuzz, Volume, **Battery** (charge: voltage falls and sag climbs,
 0% is tuned to sputter, not die), **Age** (junction leak, dried caps, fading
 gain, cold bias drift), Temperature, Output. The mapping lives in

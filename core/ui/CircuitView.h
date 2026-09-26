@@ -12,8 +12,17 @@
 // using, so macro knobs show their effect) on a timer; never touches the audio thread.
 class CircuitView : public juce::Component, private juce::Timer {
 public:
+    // Schematic: utilitarian engineering view (voltage colours, all readouts).
+    // Board: the product look -- copper traces on phenolic board, silkscreen
+    // symbols, signal brightening the copper, patina turning it verdigris.
+    enum class Style { Schematic, Board };
+
     explicit CircuitView(cd::FuzzEngine&);
+    void setStyle(Style);
+    void setPatina(float amount);                    // 0 = new copper, 1 = verdigris (Board)
+    void setTypeface(juce::Typeface::Ptr);          // labels; default font if null
     void paint(juce::Graphics&) override;
+    void resized() override;
 
 private:
     void timerCallback() override;
@@ -44,9 +53,17 @@ private:
     void label(juce::Graphics&, const juce::String&, Pt, float size = 13, juce::Colour = {},
                juce::Justification = juce::Justification::centredLeft) const;
     juce::Colour partColour(float damage) const;
+    juce::Colour traceColour(int node) const;       // Board: copper/verdigris, brighter with signal
+    juce::Colour groundColour() const;
+    juce::Colour textColour() const;
+    bool board() const { return style == Style::Board; }
 
     cd::FuzzEngine& engine;
     Knobs knobs {};
     std::array<float, cd::FuzzEngine::kNodes> vMean {}, vSwing {};
     float scale = 1;
+    Style style = Style::Schematic;
+    float patina = 0;
+    juce::Typeface::Ptr typeface;
+    juce::Image boardTexture;   // cached phenolic background for Board style
 };
