@@ -1,0 +1,7 @@
+Opto (Linux)
+
+Copy the "Opto.vst3" folder into:
+
+  ~/.vst3/
+
+then rescan plugins in your DAW (Reaper, Bitwig, Ardour, Carla, ...). x86_64.

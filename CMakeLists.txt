@@ -101,6 +101,7 @@ target_compile_definitions(cd_core INTERFACE
 add_subdirectory(products/workbench)
 add_subdirectory(products/phys-fuzz)
 add_subdirectory(products/iron)
+add_subdirectory(products/opto)
 
 # ---- headless VST3 host: renders a WAV through any built plugin (with automation)
 if(CD_BUILD_TOOLS)

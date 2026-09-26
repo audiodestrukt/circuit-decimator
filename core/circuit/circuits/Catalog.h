@@ -271,7 +271,6 @@ public:
         c = &ckt.c; el = &ckt.el; coreDev = ckt.coreOut; input = ckt.input; out = ckt.out; supply = ckt.supply;
         nominalGain = 51.3;   // Gain 50%: 34.2 dB with the cell dark
         inVolts = inVoltsDefault = dbuPeakVolts(-10);
-        darkRef = attenuation(ckt.t4->rDark);
         ioControls(ctl, -10, -40, 20);
         const char* g = "Front panel";
         ctl.push_back(custom("gain", "Gain", 0, 100, 50, p.gain * 100, "%", 0, g));
@@ -329,7 +328,7 @@ public:
     {
         return prb[k].circuit ? ckt.sc.x(prb[k].node) : ckt.c.x(prb[k].node);
     }
-    double gainReductionDb() const override { return 20 * std::log10(darkRef / attenuation(ckt.t4->resistance())); }
+    double gainReductionDb() const override { return ckt.gainReductionDb(); }
     double process(double x) override
     {
         ckt.process(x * inVolts);
@@ -350,7 +349,7 @@ protected:
         else if (key == "ratio:in") ckt.c.setRatioDeferred(0, raw);
         else if (key == "ratio:out") ckt.c.setRatioDeferred(1, 1 / raw);
         else if (key == "t4:rfull") t.gFull = 1 / raw;
-        else if (key == "t4:rdark") { t.rDark = raw * 1e6; darkRef = attenuation(t.rDark); }
+        else if (key == "t4:rdark") t.rDark = raw * 1e6;
         else if (key == "t4:vref") t.vRef = raw;
         else if (key == "t4:vthresh") t.vThresh = raw;
         else if (key == "t4:taulight") t.tauLight = raw * 1e-3;
@@ -370,25 +369,11 @@ protected:
 private:
     LA2AParams p;
     LA2A ckt;
-    double darkRef = 1;
 
     static Control custom(const char* key, const char* name, double lo, double hi, double centre, double def,
                           const char* unit, int dec, const char* g)
     {
         return { { key, name, lo, hi, centre, def, unit, dec, false }, Target::Custom, key, 1, g };
-    }
-
-    // attenuator transfer s7 -> att for a cell resistance: the secondary's
-    // Thevenin source, R6, the Peak Reduction pot's load at j, R7, the cell
-    // shunted by the Gain pot. The ratio to the dark value is the gain reduction
-    // (the real unit meters it the same way, from a second, matched cell).
-    double attenuation(double rcell) const
-    {
-        auto par = [](double a, double b) { return a * b / (a + b); };
-        const double r5 = ckt.c.value(ckt.el.at("r5")), r6 = ckt.c.value(ckt.el.at("r6")), r7 = ckt.c.value(ckt.el.at("r7"));
-        const double rth = par(p.rsrc * p.in.n * p.in.n + p.in.rs, r5);
-        const double za = par(rcell, p.gainPot), zb = r7 + za, zj = par(p.peakPot, zb);
-        return zj / (rth + r6 + zj) * za / zb;
     }
 };
 

@@ -82,6 +82,7 @@ struct LA2A {
     net::Triode* v1a = nullptr;
     std::map<std::string, int> el;     // audio path: component name -> element index (for setValueDeferred)
     std::map<std::string, int> scel;   // sidechain
+    LA2AParams prm;                    // as built
 
     void prepare(double sampleRate, int sidechainEvery = 1)
     {
@@ -140,9 +141,28 @@ struct LA2A {
         sc.setValueDeferred(scel["r2b"], p.peakPot * g);
     }
 
+    // Attenuator transfer s7 -> att for a cell resistance: the input
+    // transformer's Thevenin source, R6, the Peak Reduction pot's load at j,
+    // R7, the cell shunted by the Gain pot. Its ratio to the dark value is the
+    // gain reduction (the real unit meters it the same way, from a second,
+    // matched cell).
+    double attenuation(double rcell) const
+    {
+        auto par = [](double a, double b) { return a * b / (a + b); };
+        const double r5 = c.value(el.at("r5")), r6 = c.value(el.at("r6")), r7 = c.value(el.at("r7"));
+        const double rth = par(prm.rsrc * prm.in.n * prm.in.n + prm.in.rs, r5);
+        const double za = par(rcell, prm.gainPot), zb = r7 + za, zj = par(prm.peakPot, zb);
+        return zj / (rth + r6 + zj) * za / zb;
+    }
+    double gainReductionDb() const
+    {
+        return 20 * std::log10(attenuation(t4->rDark) / attenuation(t4->resistance()));
+    }
+
     void build(const LA2AParams& p)
     {
         using namespace net;
+        prm = p;
         auto n = [&](const char* s) { return c.node(s); };
         auto tri = [&](net::Triode t, int pl, int g, int k) {
             return static_cast<Triode*>(&c.device(std::make_unique<Triode>(t), Triode::ports(pl, g, k)));
