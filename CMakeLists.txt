@@ -34,6 +34,25 @@ if(CD_BUILD_TOOLS)
     target_link_libraries(tubepre_render PRIVATE cd_circuit)
     target_compile_options(tubepre_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
 
+    # Pentode (6AQ5) against its datasheet operating point, Jacobian check.
+    add_executable(pentode_check tools/pentode_check.cpp)
+    target_link_libraries(pentode_check PRIVATE cd_circuit)
+
+    # T4 electro-optical cell against UA's published LA-2A attack/release behaviour.
+    add_executable(t4_test tools/t4_test.cpp)
+    target_link_libraries(t4_test PRIVATE cd_circuit)
+    target_compile_options(t4_test PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # LA-2A netlist: operating point, gain, static curve, timing, cost.
+    add_executable(la2a_test tools/la2a_test.cpp)
+    target_link_libraries(la2a_test PRIVATE cd_circuit)
+    target_compile_options(la2a_test PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # LA-2A netlist on sim/la2a/la2a.cir's stimulus (sim/la2a/compare.py).
+    add_executable(la2a_render tools/la2a_render.cpp)
+    target_link_libraries(la2a_render PRIVATE cd_circuit)
+    target_compile_options(la2a_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
     # Any netlist circuit in core/circuit/circuits by name (seout, ...).
     add_executable(circuit_render tools/circuit_render.cpp)
     target_link_libraries(circuit_render PRIVATE cd_circuit)

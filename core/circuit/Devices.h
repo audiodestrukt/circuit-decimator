@@ -37,6 +37,27 @@ struct Bjt : Device {
     }
 };
 
+// softplus log(1 + e^x) and its slope (the logistic), one exp
+inline void softplus(double x, double& sp, double& sig)
+{
+    if (x > 30) { sp = x; sig = 1; return; }
+    const double e = std::exp(x);
+    sp = std::log1p(e);
+    sig = e / (1 + e);
+}
+
+// smooth grid conduction kgc * softplus_vs(vgk)^1.5 and its slope
+inline void gridCurrent(double vgk, double kgc, double vs, double& i, double& di)
+{
+    const double x = vgk / vs;
+    if (x < -40) { i = di = 0; return; }   // far below conduction: ~1e-26 A
+    double sp, sig;
+    softplus(x, sp, sig);
+    const double spg = vs * sp, r = std::sqrt(spg);
+    i = kgc * spg * r;
+    di = 1.5 * kgc * r * sig;
+}
+
 // Koren triode: E1 = vpk/kp * ln(1 + exp(kp (1/mu + vgk / sqrt(kvb + vpk^2))))
 //               Ip = 2 E1^ex / kg1  (E1 > 0, else 0)
 // Grid current once the grid goes positive: Ig = kgc * softplus(vgk)^1.5.
@@ -55,12 +76,12 @@ struct Triode : Device {
         const double vgk = v[0], vpk = std::max(v[1], 0.0);
         const double s = std::sqrt(kvb + vpk * vpk);
         const double arg = kp * (1 / mu + vgk / s);
-        const double sp = arg > 30 ? arg : std::log1p(std::exp(arg));
-        const double sig = 1 / (1 + std::exp(-arg));
+        double sp, sig;
+        softplus(arg, sp, sig);
         const double e1 = vpk / kp * sp;
         if (e1 > 0) {
             const double ip = 2 * std::pow(e1, ex) / kg1;
-            const double dip = 2 * ex * std::pow(e1, ex - 1) / kg1;
+            const double dip = ex * ip / e1;
             i[0] = ip;
             J[0] = dip * vpk * sig / s;                                         // d/dvgk
             J[1] = v[1] > 0 ? dip * (sp / kp - sig * vgk * vpk * vpk / (s * s * s)) : 0;   // d/dvpk
@@ -68,10 +89,7 @@ struct Triode : Device {
             i[0] = 0;
             J[0] = J[1] = 0;
         }
-        const double x = vgk / vs;
-        const double spg = x > 30 ? vgk : vs * std::log1p(std::exp(x));
-        i[1] = kgc * std::pow(spg, 1.5);
-        J[2] = 1.5 * kgc * std::sqrt(spg) / (1 + std::exp(-x));
+        gridCurrent(vgk, kgc, vs, i[1], J[2]);
         J[3] = 0;
     }
     bool limit(double* vnew, const double* vold) override
@@ -85,6 +103,140 @@ struct Triode : Device {
         clamp(vnew[1], vold[1], 25.0);
         return l;
     }
+};
+
+// Koren pentode (curve model): plate current depends on the grid and screen
+// voltages, flattened against plate voltage by atan(vpk/kvb); screen current
+// follows the grid + screen/mu drive. Defaults: 6AQ5 (the miniature 6V6),
+// calibrated to the datasheet typical point 250 V plate / 250 V screen /
+// -12.5 V grid -> 45 mA plate, 4.5 mA screen (tools/pentode_check).
+// ports: 0 = (control g1-k, current p->k: plate)
+//        1 = (control p-k,  current g2->k: screen)
+//        2 = (control g2-k, current g1->k: grid)
+struct Pentode : Device {
+    double mu = 9.6, ex = 1.35, kg1 = 2436, kg2 = 7488, kp = 40, kvb = 12;
+    double kgc = 4e-4, vs = 0.05;
+    static std::vector<Port> ports(int plate, int grid, int screen, int cathode)
+    {
+        return { { grid, cathode, plate, cathode }, { plate, cathode, screen, cathode }, { screen, cathode, grid, cathode } };
+    }
+
+    int numPorts() const override { return 3; }
+    // J is row-major 3x3: rows = currents (plate, screen, grid), cols = controls (g1k, pk, g2k)
+    void eval(const double* v, double* i, double* J) override
+    {
+        const double vg1 = v[0], vpk = std::max(v[1], 0.0), vg2 = std::max(v[2], 1e-3);
+        for (int k = 0; k < 9; ++k) J[k] = 0;
+        const double arg = kp * (1 / mu + vg1 / vg2);
+        double sp, sig;
+        softplus(arg, sp, sig);
+        const double e1 = vg2 / kp * sp;
+        const double at = std::atan(vpk / kvb), dat = (1 / kvb) / (1 + (vpk / kvb) * (vpk / kvb));
+        if (e1 > 0) {
+            const double pe = std::pow(e1, ex), dpe = ex * pe / e1;
+            i[0] = 2 * pe / kg1 * at;
+            J[0] = 2 * dpe / kg1 * at * sig;                                   // d/dvg1
+            J[1] = v[1] > 0 ? 2 * pe / kg1 * dat : 0;                          // d/dvpk
+            J[2] = v[2] > 1e-3 ? 2 * dpe / kg1 * at * (sp / kp - sig * vg1 / vg2) : 0;   // d/dvg2
+        } else {
+            i[0] = 0;
+        }
+        const double y = vg1 + vg2 / mu;
+        if (y > 0) {
+            i[1] = std::pow(y, ex) / kg2;
+            const double dy = ex * i[1] / y;
+            J[3] = dy;
+            J[5] = v[2] > 1e-3 ? dy / mu : 0;
+        } else {
+            i[1] = 0;
+        }
+        gridCurrent(vg1, kgc, vs, i[2], J[6]);
+    }
+    bool limit(double* vnew, const double* vold) override
+    {
+        bool l = false;
+        auto clamp = [&](double& vn, double vo, double maxStep) {
+            if (std::abs(vn - vo) > maxStep) { vn = vo + std::copysign(maxStep, vn - vo); l = true; }
+        };
+        clamp(vnew[0], vold[0], 0.5);
+        clamp(vnew[1], vold[1], 25.0);
+        clamp(vnew[2], vold[2], 25.0);
+        return l;
+    }
+};
+
+// T4 electro-optical cell (LA-2A): an electroluminescent panel lighting a
+// CdS photocell. Behavioural, fitted to UA's published LA-2A specs: very fast
+// attack; ~40-80 ms to 50% release; 0.5-5 s for complete release depending on
+// how much and how long it had been compressing ("memory").
+//   port 0 = (control: EL panel voltage, current: none -- the panel's
+//            electrical load is ordinary R/C in the netlist)
+//   port 1 = (control: photocell voltage, current: G v -- the cell)
+// State moves only in commit(): panel light L follows the EL drive (~1 ms);
+// the cell's conductance has a fast part (releases with a ~60 ms half-life)
+// and a slow part that builds under sustained light and releases over
+// seconds, stretched by a memory state that tracks recent exposure.
+struct T4Cell : Device {
+    // EL panel: light ~ (|v| / vRef)^2 above a small threshold
+    double vRef = 150, vThresh = 8, tauLight = 1e-3;
+    // CdS: conductance at full light gFull, dark resistance rDark, photo response exponent
+    double gFull = 1.0 / 400, rDark = 5e6, gamma = 0.8;
+    // In dB, gain reduction goes roughly as log(1 + G R), so the fast part has to
+    // carry most of the conductance for its release to take away about half the
+    // dB: UA's "releases quickly to approximately half, the rest over seconds".
+    double fastShare = 0.85;                          // share of the fast component
+    double tauFastOn = 3e-3, tauFastOff = 0.03;
+    double tauSlowOn = 0.3, tauSlowOff = 0.18;       // slow part; release stretched by memory
+    double memStretch = 6;                           // slow release x (1 + memStretch * memory)
+    double tauMemOn = 2.0, tauMemOff = 12.0;
+    static std::vector<Port> ports(int elA, int elB, int cellA, int cellB)
+    {
+        return { { elA, elB, elA, elB }, { cellA, cellB, cellA, cellB } };
+    }
+    // External panel: the cell alone (one port); the EL panel voltage comes from
+    // setPanelVoltage() -- e.g. a sidechain solved as a separate circuit.
+    static std::vector<Port> cellPorts(int cellA, int cellB) { return { { cellA, cellB, cellA, cellB } }; }
+    bool external = false;
+    void setPanelVoltage(double v) { panelV = v; }
+
+    int numPorts() const override { return external ? 1 : 2; }
+    void setTimestep(double t) override { dt = t; }
+    void reset() override { light = gFast = gSlow = memory = 0; }
+    void eval(const double* v, double* i, double* J) override
+    {
+        const double g = conductance();
+        if (external) {
+            i[0] = g * v[0];
+            J[0] = g;
+            return;
+        }
+        i[0] = 0;
+        i[1] = g * v[1];
+        J[0] = J[1] = J[2] = 0;
+        J[3] = g;
+    }
+    void commit(const double* v) override
+    {
+        const double x = std::max(0.0, std::abs(external ? panelV : v[0]) - vThresh) / vRef;
+        light += (x * x - light) * (1 - std::exp(-dt / tauLight));
+        const double drive = std::pow(std::max(light, 0.0), gamma);
+        auto follow = [&](double& s, double target, double tOn, double tOff) {
+            const double tau = target > s ? tOn : tOff;
+            s += (target - s) * (1 - std::exp(-dt / tau));
+        };
+        follow(gFast, fastShare * drive, tauFastOn, tauFastOff);
+        follow(gSlow, (1 - fastShare) * drive, tauSlowOn, tauSlowOff * (1 + memStretch * memory));
+        follow(memory, std::min(1.0, drive * 4), tauMemOn, tauMemOff);
+    }
+
+    double conductance() const { return gFull * (gFast + gSlow) + 1 / rDark; }
+    double resistance() const { return 1 / conductance(); }
+    double panelLight() const { return light; }
+    double cellMemory() const { return memory; }
+
+private:
+    double dt = 1.0 / 192000;
+    double light = 0, gFast = 0, gSlow = 0, memory = 0, panelV = 0;
 };
 
 // Magnetic core on a winding: port 0 = (control: winding voltage a-b,
@@ -158,18 +310,21 @@ private:
     double dt = 1.0 / 192000;
     double lam = 0, B = 0, M = 0, vPrev = 0;
 
-    static double langevin(double x) { return std::abs(x) < 1e-4 ? x / 3 : 1 / std::tanh(x) - 1 / x; }
-    static double dlangevin(double x)
+    // Langevin L(x) = coth x - 1/x and its slope, one tanh
+    static void langevin(double x, double& l, double& dl)
     {
-        if (std::abs(x) < 1e-4) return 1.0 / 3 - x * x / 15;
-        const double sh = std::sinh(x);
-        return 1 / (x * x) - 1 / (sh * sh);
+        if (std::abs(x) < 1e-4) { l = x / 3; dl = 1.0 / 3 - x * x / 15; return; }
+        const double ct = 1 / std::tanh(x), ix = 1 / x;
+        l = ct - ix;
+        dl = ix * ix - (ct * ct - 1);   // 1/x^2 - csch^2 x
     }
     double dMdB(double b, double mag, double delta) const
     {
         const double h = b / mu0 - mag;
         const double x = std::clamp((h + alpha * mag) / a, -80.0, 80.0);
-        const double man = ms * langevin(x), dman = ms / a * dlangevin(x);
+        double l, dl;
+        langevin(x, l, dl);
+        const double man = ms * l, dman = ms / a * dl;
         const double diff = man - mag;
         const double dM = diff * delta > 0 ? 1.0 : 0.0;
         const double dMdH = ((1 - c) * dM * diff / ((1 - c) * delta * k - alpha * diff) + c * dman)

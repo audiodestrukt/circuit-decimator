@@ -102,6 +102,7 @@ public:
     // ---- running ---------------------------------------------------------------
     int maxIterations = 20;
     double reltol = 1e-3;
+    bool extrapolate = true;   // Newton initial guess from the last two samples
     int lastIterations = 0;
     long failures = 0;
 
@@ -151,6 +152,7 @@ public:
         std::fill(vr.begin(), vr.end(), 0.0);
         std::fill(ir.begin(), ir.end(), 0.0);
         std::fill(vj.begin(), vj.end(), 0.0);
+        std::fill(vj1.begin(), vj1.end(), 0.0);
         std::fill(z.begin(), z.end(), 0.0);
         for (auto& d : devs) d.dev->reset();
     }
@@ -169,7 +171,17 @@ public:
             for (int c = 0; c < NW; ++c) acc += Ev[idx(r, c, NW)] * w[(size_t) c];
             p[(size_t) r] = acc;
         }
-        for (int k = 0; k < NI; ++k) v[(size_t) k] = vj[(size_t) k];
+        // Newton starts from the last two samples extrapolated: oversampled
+        // signals are smooth, so it often lands within tolerance in one step
+        for (int k = 0; k < NI; ++k)
+            v[(size_t) k] = extrapolate ? 2 * vj[(size_t) k] - vj1[(size_t) k] : vj[(size_t) k];
+        if (extrapolate) {   // the devices' own step limits apply to the guess too (pnjlim...)
+            int off = 0;
+            for (auto& d : devs) {
+                d.dev->limit(&v[(size_t) off], &vj[(size_t) off]);
+                off += d.dev->numPorts();
+            }
+        }
         lastIterations = newton(false);
 
         for (int k = 0; k < NW; ++k) z[(size_t) k] = w[(size_t) k];
@@ -185,7 +197,7 @@ public:
             vr[(size_t) k] = acc;
         }
         commitDevices();
-        for (int k = 0; k < NI; ++k) vj[(size_t) k] = v[(size_t) k];
+        for (int k = 0; k < NI; ++k) { vj1[(size_t) k] = vj[(size_t) k]; vj[(size_t) k] = v[(size_t) k]; }
     }
 
     double out(int k) const
@@ -230,7 +242,8 @@ private:
     std::vector<int> auxOfSource;
 
     std::vector<double> D, Ev, K, Rm, geq, sgn;
-    std::vector<double> vr, ir, vj, w, p, v, cur, z, J, Jg, F, dv, vPrev, A, Bm;
+    std::vector<double> vr, ir, vj, vj1, w, p, v, cur, z, J, Jg, F, dv, vPrev, A, Bm;
+    std::vector<int> blk0, blkN;   // per port: first port and size of its device's block in Jg
 
     static size_t idx(int r, int c, int cols) { return (size_t) r * (size_t) cols + (size_t) c; }
 
@@ -261,13 +274,21 @@ private:
         vr.assign((size_t) NS, 0.0);
         ir.assign((size_t) NS, 0.0);
         vj.assign((size_t) NI, 0.0);
+        vj1.assign((size_t) NI, 0.0);
         w.assign((size_t) NW, 0.0);
         p.assign((size_t) NI, 0.0);
         v.assign((size_t) NI, 0.0);
         cur.assign((size_t) NI, 0.0);
         z.assign((size_t) NZ, 0.0);
         J.assign((size_t) NI * (size_t) NI, 0);
-        Jg.assign((size_t) NI * (size_t) NI, 0);
+        Jg.assign((size_t) NI * (size_t) NI, 0);   // block diagonal: only device blocks are ever written
+        blk0.assign((size_t) NI, 0);
+        blkN.assign((size_t) NI, 0);
+        for (int off = 0; auto& d : devs) {
+            const int n = d.dev->numPorts();
+            for (int k = 0; k < n; ++k) { blk0[(size_t) (off + k)] = off; blkN[(size_t) (off + k)] = n; }
+            off += n;
+        }
         F.assign((size_t) NI, 0.0);
         dv.assign((size_t) NI, 0.0);
         vPrev.assign((size_t) NI, 0.0);
@@ -392,7 +413,6 @@ private:
 
     void evalDevices(bool dc)
     {
-        std::fill(Jg.begin(), Jg.end(), 0.0);
         int off = 0;
         for (auto& d : devs) {
             const int n = d.dev->numPorts();
@@ -415,12 +435,13 @@ private:
         while (it < maxIterations) {
             ++it;
             evalDevices(dc);
-            // J = K Jg - I,  F = p + K i - v
+            // J = K Jg - I,  F = p + K i - v  (Jg is block diagonal: sum over c's block only)
             for (int r = 0; r < NI; ++r) {
                 double f = p[(size_t) r] - v[(size_t) r];
                 for (int c = 0; c < NI; ++c) {
                     double acc = 0;
-                    for (int k = 0; k < NI; ++k) acc += K[idx(r, k, NI)] * Jg[idx(k, c, NI)];
+                    const int k0 = blk0[(size_t) c], k1 = k0 + blkN[(size_t) c];
+                    for (int k = k0; k < k1; ++k) acc += K[idx(r, k, NI)] * Jg[idx(k, c, NI)];
                     J[idx(r, c, NI)] = acc - (r == c ? 1.0 : 0.0);
                     f += K[idx(r, c, NI)] * cur[(size_t) c];
                 }
@@ -436,7 +457,8 @@ private:
             // linearised currents at the new point
             for (int r = 0; r < NI; ++r) {
                 double acc = cur[(size_t) r];
-                for (int c = 0; c < NI; ++c) acc += Jg[idx(r, c, NI)] * dv[(size_t) c];
+                const int c0 = blk0[(size_t) r], c1 = c0 + blkN[(size_t) r];
+                for (int c = c0; c < c1; ++c) acc += Jg[idx(r, c, NI)] * dv[(size_t) c];
                 cur[(size_t) r] = acc;
             }
             // step, then let devices limit it
@@ -537,7 +559,7 @@ private:
                 off += d.dev->numPorts();
             }
         }
-        for (int k = 0; k < NI; ++k) vj[(size_t) k] = v[(size_t) k];
+        for (int k = 0; k < NI; ++k) vj[(size_t) k] = vj1[(size_t) k] = v[(size_t) k];
         build(false);
         // z/x reflect the DC point until the first sample
         for (int k = 0; k < NS; ++k) z[(size_t) k] = geq[(size_t) k] * vr[(size_t) k] + ir[(size_t) k];

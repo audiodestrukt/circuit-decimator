@@ -23,6 +23,7 @@ public:
     cd::ui::ProbeTelemetry probes;
     std::atomic<float> newtonAverage { 0 };
     std::atomic<long> failures { 0 };
+    std::atomic<float> gainReduction { NAN };   // dB, NaN for circuits without it
 
     ~NetBench()
     {
@@ -50,6 +51,7 @@ public:
     std::vector<cd::catalog::Control> uiControls;
     std::vector<std::string> uiProbes;
     bool uiHasCore = false;
+    bool uiHasGainReduction = false;
 
     // UI thread: build circuit `index`, load its default values, hand it over
     void select(int index)
@@ -60,6 +62,7 @@ public:
         uiProbes.clear();
         for (auto& pr : c->probes()) uiProbes.emplace_back(pr.label);
         uiHasCore = c->core() != nullptr;
+        uiHasGainReduction = std::isfinite(c->gainReductionDb());
         const auto& ctl = c->controls();
         std::vector<double> v(ctl.size());
         for (size_t k = 0; k < ctl.size() && k < (size_t) kMaxControls; ++k) {
@@ -87,7 +90,7 @@ public:
             dcBlock.reset();
         }
         if (!current) { buf.clear(); return; }
-        if (warmRequested.exchange(false)) current->circuit().warmStart();
+        if (warmRequested.exchange(false)) current->warmStart();
 
         const int nc = buf.getNumChannels();
         for (int start = 0; start < n; start += block) {
@@ -107,7 +110,6 @@ public:
             double sum[cd::ui::ProbeTelemetry::kMax] {}, lo[cd::ui::ProbeTelemetry::kMax], hi[cd::ui::ProbeTelemetry::kMax];
             for (int k = 0; k < np; ++k) { lo[k] = 1e9; hi[k] = -1e9; }
             long iters = 0;
-            auto& ckt = current->circuit();
             for (int i = 0; i < nUp; ++i) {
                 if (i % 64 == 0) {
                     const size_t nv = juce::jmin(current->controls().size(), (size_t) kMaxControls);
@@ -115,12 +117,12 @@ public:
                     current->apply(snapshot.data());
                 }
                 x[i] = (float) current->process(x[i]);
-                iters += ckt.lastIterations;
+                iters += current->iterations();
                 if (auto* core = current->core(); core && (i & 7) == 0)
                     trace.push((float) core->fluxDensity(), (float) core->field());
                 if ((i & 3) == 0)
                     for (int k = 0; k < np; ++k) {
-                        const double v = ckt.x(prb[(size_t) k].node);
+                        const double v = current->probeVoltage((size_t) k);
                         sum[k] += v;
                         lo[k] = std::min(lo[k], v);
                         hi[k] = std::max(hi[k], v);
@@ -132,7 +134,8 @@ public:
                 probes.swing[(size_t) k] = (float) (hi[k] - lo[k]);
             }
             newtonAverage = (float) iters / (float) juce::jmax(1, nUp);
-            failures = ckt.failures;
+            failures = current->failureCount();
+            gainReduction = (float) current->gainReductionDb();
             oversampling.processSamplesDown(ab);
             for (int i = 0; i < len; ++i) {
                 float y = dcBlock.processSample(mono.getSample(0, i));

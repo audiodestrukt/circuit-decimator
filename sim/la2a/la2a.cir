@@ -1,0 +1,177 @@
+* LA-2A-style optical leveling amplifier -- the spec for core/circuit/circuits/LA2A.h.
+* Topology from the Universal Audio LA-2A manual, figs. 5-7 (see LA2A.h for the
+* assumptions where the figures are ambiguous). One circuit here; the engine
+* solves the audio path and the sidechain separately (they meet at j and at the
+* T4), which this deck checks.
+*
+* Input: a 1 kHz tone whose level steps: lv1 dBu until t1, lv2 until t2, lv1 after.
+
+* ---- drive ------------------------------------------------------------------------
+.param lv1=-30 lv2=0 t1=0.3 t2=1.3 freq=1000
+.param a1={1.09602 * pwr(10, lv1 / 20)} a2={1.09602 * pwr(10, lv2 / 20)}
+* ---- controls (wiper positions 0..1) -------------------------------------------------
+.param gain=0.75 peak=0.5
+* ---- supply, source, load -------------------------------------------------------------
+.param bplus=250 rsrc=600 rload=600
+* ---- input transformer (1:4, nickel-ish core) --------------------------------------------
+.param ni=4 rpi=30 llpi=1m rsi=600 llsi=16m csi=200p
+.param npi=1500 aci=1.2e-4 lei=0.08
+.param msi=6.4e5 jai=8.5 alphai=1e-5 kpini=4 cri=0.2
+* ---- output transformer (3:1 down, silicon steel) --------------------------------------------
+.param no=0.333333333333 rpo=250 llpo=5m rso=25 llso=0.5m cso=100p
+.param npo=2600 aco=2e-4 leo=0.12
+.param mso=1.3e6 jao=100 alphao=1e-4 kpino=20 cro=0.3
+.param mu0=1.25663706e-6
+* ---- attenuator, amplifier, sidechain ----------------------------------------------------
+.param r5=68k r6=68k r7=2.7k gainpot=100k peakpot=100k
+.param r9=220k r10=1.5k c1=0.02u r12=470k r13=220k r14=2.7k c2=0.1u rfb=470k cfb=1u
+.param r15=470k r17=10k r18=1k r19=470k r20=1k c5=10u c3=0.1u cmiller=1.7p
+.param r31=1k r32=1k rtail=2.2k r33=220k c8=0.03u rg3b=1meg
+.param c9=0.02u r3=1meg r34=22k r35=220k c6=0.01u r36=1k c10=50u c11=0.1u cel=10n rel=470k
+* ---- T4 cell (Devices.h T4Cell defaults) ----------------------------------------------------------
+.param vref=150 vthresh=8 taul=1m gfull=2.5e-3 rdark=5meg gam=0.8
+.param fsh=0.85 tfon=3m tfoff=30m tson=0.3 tsoff=0.18 mst=6 tmon=2 tmoff=12
+
+.func softplus(x) {x > 30 ? x : ln(1 + exp(x))}
+.func lang(x) {abs(x) < 1e-4 ? x/3 : cosh(x)/sinh(x) - 1/x}
+.func dlang(x) {abs(x) < 1e-4 ? 1/3 - x*x/15 : 1/(x*x) - 1/(sinh(x)*sinh(x))}
+.func clampx(x) {min(max(x, -80), 80)}
+
+* Koren triode, grid conduction
+.subckt triode p g k mu=100 ex=1.4 kg1=1060 kp=600 kvb=300 kgc=4e-4
+Be1 e1 0 V={max(v(p,k), 0) / kp * softplus(kp * (1/mu + v(g,k) / sqrt(kvb + max(v(p,k),0)**2)))}
+Bip p k I={v(e1) > 0 ? 2 * pwr(v(e1), ex) / kg1 : 0}
+Big g k I={kgc * pwr(0.05 * softplus(v(g,k) / 0.05), 1.5)}
+.ends
+
+* Koren pentode (6AQ5 defaults, Devices.h Pentode)
+.subckt pentode p g1 g2 k mu=9.6 ex=1.35 kg1=2436 kg2=7488 kp=40 kvb=12 kgc=4e-4
+Be1 e1 0 V={max(v(g2,k),1e-3) / kp * softplus(kp * (1/mu + v(g1,k) / max(v(g2,k),1e-3)))}
+Bip p k I={v(e1) > 0 ? 2 * pwr(v(e1), ex) / kg1 * atan(max(v(p,k),0) / kvb) : 0}
+Bis g2 k I={v(g1,k) + max(v(g2,k),1e-3)/mu > 0 ? pwr(v(g1,k) + max(v(g2,k),1e-3)/mu, ex) / kg2 : 0}
+Big g1 k I={kgc * pwr(0.05 * softplus(v(g1,k) / 0.05), 1.5)}
+.ends
+
+* Jiles-Atherton core on a winding a-b (B-driven, delta_M), as sim/tubeout/se_out.cir
+.subckt jacore a b np=1000 ac=1e-4 le=0.1 lg=0 ms=1e6 ja=100 alpha=1e-4 kpin=20 cr=0.3
+Glam 0 lam cur={v(a,b)}
+Clam lam 0 1
+Rlam lam 0 1e15
+Gmm 0 mm cur={v(dmdb) / ms * v(a,b) / (np*ac)}
+Cmm mm 0 1
+Rmm mm 0 1e15
+Bbb bb 0 V={v(lam) / (np*ac)}
+Bhh hh 0 V={v(bb)/mu0 - ms*v(mm)}
+Bhe he 0 V={v(hh) + alpha*ms*v(mm)}
+Bman man 0 V={ms * lang(clampx(v(he)/ja))}
+Bdman dman 0 V={ms/ja * dlang(clampx(v(he)/ja))}
+Bdel del 0 V={v(a,b) >= 0 ? 1 : -1}
+Bdmdh dmdh 0 V={((1-cr) * (((v(man) - ms*v(mm)) * v(del) > 0) ? 1 : 0) * (v(man) - ms*v(mm)) / ((1-cr)*v(del)*kpin - alpha*(v(man) - ms*v(mm))) + cr*v(dman)) / (1 - cr*alpha*v(dman))}
+Bdmdb dmdb 0 V={v(dmdh) / (mu0 * (1 + v(dmdh)))}
+Bim a b I={(v(hh)*le + v(bb)/mu0*lg) / np}
+.ends
+
+Vbp bp 0 {bplus}
+
+* ---- input: level-stepped tone, 600 ohm source -> input transformer -----------------------------
+Bvin src 0 V={(time > t1 && time < t2 ? a2 : a1) * sin(2*3.14159265358979*freq*time)}
+Rsrc src b1 {rsrc + rpi}
+Llpi b1 mi {llpi}
+Xci mi 0 jacore np={npi} ac={aci} le={lei} ms={msi} ja={jai} alpha={alphai} kpin={kpini} cr={cri}
+Exi si xsi mi 0 {ni}
+Vxi xsi 0 0
+Fxi 0 mi Vxi {ni}
+Llsi si sa {llsi}
+Rsi sa s7 {rsi}
+Csi s7 0 {csi}
+R5 s7 0 {r5}
+
+* ---- attenuator: R6, R7, T4 photocell, Gain pot; Peak Reduction pot loads j -------------------------
+R6 s7 j {r6}
+R7 j att {r7}
+R1a att g1a {max(gainpot*(1-gain), 10)}
+R1b g1a 0 {max(gainpot*gain, 10)}
+R2a j g3a {max(peakpot*(1-peak), 10)}
+R2b g3a 0 {max(peakpot*peak, 10)}
+
+* ---- V1A, V1B 12AX7 -----------------------------------------------------------------------------------
+R9 bp p1a {r9}
+R10 k1a 0 {r10}
+Cm1a g1a p1a {cmiller}
+X1a p1a g1a k1a triode
+C1 p1a g1b {c1}
+R12 g1b 0 {r12}
+R13 bp p1b {r13}
+R14 k1b 0 {r14}
+Cm1b g1b p1b {cmiller}
+X1b p1b g1b k1b triode
+C2 p1b g2a {c2}
+
+* ---- V2A cathode follower over V2B sink (12BH7), C3 White bootstrap ------------------------------------
+R15 g2a sink {r15}
+R17 bp p2a {r17}
+R18 k2a sink {r18}
+X2a p2a g2a k2a triode mu=16.5 ex=1.3 kg1=1497 kp=84 kvb=300
+R19 g2b 0 {r19}
+R20 k2b 0 {r20}
+X2b sink g2b k2b triode mu=16.5 ex=1.3 kg1=1497 kp=84 kvb=300
+C3 p2a g2b {c3}
+
+* ---- output transformer, feedback -----------------------------------------------------------------------
+C5 k2a po {c5}
+Rpo po pl {rpo}
+Llpo pl mo {llpo}
+Xco mo 0 jacore np={npo} ac={aco} le={leo} ms={mso} ja={jao} alpha={alphao} kpin={kpino} cr={cro}
+Exo so xso mo 0 {no}
+Vxo xso 0 0
+Fxo 0 mo Vxo {no}
+Llso so sb {llso}
+Rso sb out {rso}
+Cso out 0 {cso}
+Rload out 0 {rload}
+Cfb k2a fb {cfb}
+Rfb fb k1a {rfb}
+
+* ---- sidechain: V3 12AX7 cathode-coupled pair -> V4 6AQ5 -> EL panel --------------------------------------
+R31 k3a tail {r31}
+R32 k3b tail {r32}
+Rtail tail 0 {rtail}
+Rg3b g3b 0 {rg3b}
+C8 g3b 0 {c8}
+R33 bp p3b {r33}
+X3a bp g3a k3a triode
+X3b p3b g3b k3b triode
+C9 p3b g4 {c9}
+R3 g4 0 {r3}
+R34 bp p4 {r34}
+R35 bp g2 {r35}
+C6 g2 0 {c6}
+R36 k4 0 {r36}
+C10 k4 0 {c10}
+X4 p4 g4 g2 k4 pentode
+C11 p4 el {c11}
+Cel el 0 {cel}
+Rel el 0 {rel}
+
+* ---- T4: EL panel light -> CdS cell (behavioural, Devices.h T4Cell) ----------------------------------------
+Bx x 0 V={max(0, abs(v(el)) - vthresh) / vref}
+Gl 0 lt cur={(v(x)*v(x) - v(lt)) / taul}
+Cl lt 0 1
+Bd dr 0 V={pwr(max(v(lt), 1e-15), gam)}
+Gf 0 gf cur={(fsh*v(dr) - v(gf)) / (fsh*v(dr) > v(gf) ? tfon : tfoff)}
+Cf gf 0 1
+Gs 0 gs cur={((1-fsh)*v(dr) - v(gs)) / ((1-fsh)*v(dr) > v(gs) ? tson : tsoff*(1 + mst*v(mem)))}
+Cs gs 0 1
+Gm 0 mem cur={(min(1, 4*v(dr)) - v(mem)) / (min(1, 4*v(dr)) > v(mem) ? tmon : tmoff)}
+Cmem mem 0 1
+Bcell att 0 I={(gfull*(v(gf) + v(gs)) + 1/rdark) * v(att)}
+
+.options reltol=1e-4 abstol=1e-12 vntol=1e-7 itl1=500 itl4=100
+.control
+set wr_singlescale
+set wr_vecnames
+tran 10.4167u 2.5 0 10.4167u
+wrdata la2a.dat v(out) v(el) v(j) v(gf) v(gs) v(mem)
+quit
+.endc
+.end

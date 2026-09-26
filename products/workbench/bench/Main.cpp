@@ -16,6 +16,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "NetControls.h"
+#include "ui/GainReductionView.h"
 #include "PluginProcessor.h"
 #include "ui/CircuitView.h"
 
@@ -101,6 +102,7 @@ public:
         addAndMakeVisible(circuitBox);
         addChildComponent(meter);
         addChildComponent(loopView);
+        addChildComponent(grView);
         controlsViewport.setViewedComponent(&netControls, false);
         controlsViewport.setScrollBarsShown(true, false);
         addChildComponent(controlsViewport);
@@ -208,12 +210,16 @@ public:
         scope.setBounds(r.removeFromBottom(140));
         r.removeFromBottom(8);
         circuitView.setBounds(r);
+        const int panes = 1 + (net.uiHasCore ? 1 : 0) + (net.uiHasGainReduction ? 1 : 0);
+        const int w = (r.getWidth() - 8 * (panes - 1)) / panes;
+        meter.setBounds(r.removeFromLeft(w));
+        if (net.uiHasGainReduction) {
+            r.removeFromLeft(8);
+            grView.setBounds(r.removeFromLeft(w));
+        }
         if (net.uiHasCore) {
-            meter.setBounds(r.removeFromLeft(r.getWidth() / 2 - 4));
             r.removeFromLeft(8);
             loopView.setBounds(r);
-        } else {
-            meter.setBounds(r);
         }
     }
 
@@ -364,6 +370,8 @@ private:
         searchButton.setEnabled(fuzz);
         meter.setVisible(!fuzz);
         loopView.setVisible(!fuzz && net.uiHasCore);
+        grView.setVisible(!fuzz && net.uiHasGainReduction);
+        grView.clear();
         controlsViewport.setVisible(!fuzz);
         resized();
     }
@@ -433,6 +441,7 @@ private:
     juce::ComboBox circuitBox;
     cd::ui::NodeMeterView meter { net.probes };
     cd::ui::BHLoopView loopView { net.trace };
+    cd::ui::GainReductionView grView { net.gainReduction };
     NetControls netControls { net };
     juce::Viewport controlsViewport;
     std::unique_ptr<juce::AudioProcessorEditor> editor;

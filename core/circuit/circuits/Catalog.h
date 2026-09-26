@@ -10,10 +10,12 @@
 #pragma once
 
 #include "../Knobs.h"
+#include "LA2A.h"
 #include "MicTransformer.h"
 #include "SEOutput.h"
 #include "TubePre.h"
 
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -21,7 +23,7 @@
 
 namespace cd::catalog {
 
-enum class Target { Element, Ratio, Supply, Core, Tube, InputLevel, Output };
+enum class Target { Element, Ratio, Supply, Core, Tube, InputLevel, Output, Custom };
 
 struct Control {
     Knob knob;          // id, name, range (display units), default, unit
@@ -34,6 +36,7 @@ struct Control {
 struct Probe {
     const char* label;
     int node;
+    int circuit = 0;   // for circuits built from more than one net::Circuit
 };
 
 inline double dbuPeakVolts(double dbu) { return 0.775 * std::sqrt(2.0) * std::pow(10.0, dbu / 20.0); }
@@ -46,29 +49,23 @@ public:
     net::JACore* core() const { return coreDev; }
     net::Circuit& circuit() { return *c; }
 
-    void prepare(double sampleRate) { c->prepare(sampleRate); }
+    virtual void prepare(double sampleRate) { c->prepare(sampleRate); }
+    virtual void warmStart() { c->warmStart(); }
+    virtual long failureCount() const { return c->failures; }
+    int iterations() const { return c->lastIterations; }
+    virtual double probeVoltage(size_t k) const { return c->x(prb[k].node); }
+    // gain reduction in dB for circuits that have it (compressors), else NaN
+    virtual double gainReductionDb() const { return NAN; }
 
     void apply(const double* v)
     {
-        for (size_t k = 0; k < ctl.size(); ++k) {
-            const auto& q = ctl[k];
-            const double x = v[k] * q.scale;
-            switch (q.target) {
-            case Target::Element: c->setValueDeferred((*el)[q.key], x); break;
-            case Target::Ratio: c->setRatioDeferred(0, x); break;
-            case Target::Supply: c->setInput(supply, x); break;
-            case Target::Core: setField(coreFields(), q.key, x); break;
-            case Target::Tube: setField(tubeFields(), q.key, x); break;
-            case Target::InputLevel: inVolts = dbuPeakVolts(v[k]); break;
-            case Target::Output: outGain = std::pow(10.0, v[k] / 20.0); break;
-            }
-        }
-        c->rebuildIfDirty();
+        for (size_t k = 0; k < ctl.size(); ++k) applyOne(ctl[k], v[k]);
+        rebuild();
     }
 
     // full-scale in -> full-scale out, normalised by the circuit's nominal gain
     // so the default settings play at roughly unity
-    double process(double x)
+    virtual double process(double x)
     {
         c->setInput(input, x * inVolts);
         c->process();
@@ -84,6 +81,22 @@ protected:
     double nominalGain = 1, inVolts = 1, inVoltsDefault = 1, outGain = 1;
     std::vector<Control> ctl;
     std::vector<Probe> prb;
+
+    virtual void applyOne(const Control& q, double raw)
+    {
+        const double x = raw * q.scale;
+        switch (q.target) {
+        case Target::Element: c->setValueDeferred((*el)[q.key], x); break;
+        case Target::Ratio: c->setRatioDeferred(0, x); break;
+        case Target::Supply: c->setInput(supply, x); break;
+        case Target::Core: setField(coreFields(), q.key, x); break;
+        case Target::Tube: setField(tubeFields(), q.key, x); break;
+        case Target::InputLevel: inVolts = dbuPeakVolts(raw); break;
+        case Target::Output: outGain = std::pow(10.0, raw / 20.0); break;
+        case Target::Custom: break;
+        }
+    }
+    virtual void rebuild() { c->rebuildIfDirty(); }
 
     struct Field { const char* key; double* p; };
     std::vector<Field> coreFields() const
@@ -245,7 +258,141 @@ private:
     SEOutput ckt;
 };
 
-inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer" }; }
+// ---- LA-2A leveling amplifier ----------------------------------------------------------
+// Two circuits (audio path + sidechain, LA2A.h). Knobs keyed "sc:<name>" are
+// sidechain components; "t4:<field>" the T4 cell; front-panel pots, B+ and the
+// two transformer ratios are handled here too.
+class LA2ABench : public BenchCircuit {
+public:
+    LA2ABench()
+    {
+        p.gain = 0.5;
+        ckt.build(p);
+        c = &ckt.c; el = &ckt.el; coreDev = ckt.coreOut; input = ckt.input; out = ckt.out; supply = ckt.supply;
+        nominalGain = 51.3;   // Gain 50%: 34.2 dB with the cell dark
+        inVolts = inVoltsDefault = dbuPeakVolts(-10);
+        darkRef = attenuation(ckt.t4->rDark);
+        ioControls(ctl, -10, -40, 20);
+        const char* g = "Front panel";
+        ctl.push_back(custom("gain", "Gain", 0, 100, 50, p.gain * 100, "%", 0, g));
+        ctl.push_back(custom("peak", "Peak Reduction", 0, 100, 50, p.peak * 100, "%", 0, g));
+        ctl.push_back(custom("bplus", "B+", 100, 350, 100, p.bplus, "V", 0, g));
+        g = "Attenuator";
+        ctl.push_back(element("r5", "R5 (secondary load)", 5, 500, 68, p.r5 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("r6", "R6 (series)", 5, 500, 68, p.r6 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("r7", "R7 (to cell)", 0.1, 50, 2.7, p.r7 * 1e-3, "kOhm", 1e3, 2, g));
+        g = "T4 cell";
+        const auto& t = *ckt.t4;
+        ctl.push_back(custom("t4:rfull", "R at full light", 50, 5000, 400, 1 / t.gFull, "Ohm", 0, g));
+        ctl.push_back(custom("t4:rdark", "Dark R", 0.1, 50, 5, t.rDark * 1e-6, "MOhm", 2, g));
+        ctl.push_back(custom("t4:vref", "EL full-light V", 20, 500, 150, t.vRef, "V", 0, g));
+        ctl.push_back(custom("t4:vthresh", "EL threshold", 0, 50, 8, t.vThresh, "V", 1, g));
+        ctl.push_back(custom("t4:taulight", "Panel lag", 0.1, 20, 1, t.tauLight * 1e3, "ms", 2, g));
+        ctl.push_back(custom("t4:gamma", "Photo exponent", 0.3, 1.5, 0.8, t.gamma, "", 2, g));
+        ctl.push_back(custom("t4:fast", "Fast share", 0, 1, 0, t.fastShare, "", 2, g));
+        ctl.push_back(custom("t4:fastoff", "Fast release", 3, 500, 30, t.tauFastOff * 1e3, "ms", 1, g));
+        ctl.push_back(custom("t4:slowoff", "Slow release", 0.02, 3, 0.18, t.tauSlowOff, "s", 2, g));
+        ctl.push_back(custom("t4:mem", "Memory stretch", 0, 30, 6, t.memStretch, "x", 1, g));
+        ctl.push_back(custom("t4:memoff", "Memory fade", 0.5, 60, 12, t.tauMemOff, "s", 1, g));
+        g = "Sidechain";
+        ctl.push_back(element("sc:rtail", "V3 tail R", 0.2, 20, 2.2, p.rtail * 1e-3, "kOhm", 1e3, 2, g));
+        ctl.push_back(element("sc:r33", "V3B plate R33", 22, 1000, 220, p.r33 * 1e-3, "kOhm", 1e3, 0, g));
+        ctl.push_back(element("sc:c9", "C9 coupling", 1, 200, 20, p.c9 * 1e9, "nF", 1e-9, 1, g));
+        ctl.push_back(element("sc:r34", "V4 plate R34", 2.2, 100, 22, p.r34 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("sc:r35", "V4 screen R35", 10, 1000, 220, p.r35 * 1e-3, "kOhm", 1e3, 0, g));
+        ctl.push_back(element("sc:r36", "V4 cathode R36", 0.1, 10, 1, p.r36 * 1e-3, "kOhm", 1e3, 2, g));
+        ctl.push_back(element("sc:c11", "C11 to panel", 5, 1000, 100, p.c11 * 1e9, "nF", 1e-9, 0, g));
+        ctl.push_back(element("sc:cel", "EL panel C", 1, 100, 10, p.cel * 1e9, "nF", 1e-9, 1, g));
+        ctl.push_back(element("sc:rel", "EL panel leak", 22, 5000, 470, p.rel * 1e-3, "kOhm", 1e3, 0, g));
+        g = "Amplifier";
+        ctl.push_back(element("rfb", "Feedback R", 47, 5000, 470, p.rfb * 1e-3, "kOhm", 1e3, 0, g));
+        ctl.push_back(element("r10", "V1A cathode R10", 0.2, 10, 1.5, p.r10 * 1e-3, "kOhm", 1e3, 2, g));
+        ctl.push_back(element("r14", "V1B cathode R14", 0.2, 10, 2.7, p.r14 * 1e-3, "kOhm", 1e3, 2, g));
+        ctl.push_back(element("c3", "C3 (White CF)", 1, 1000, 100, p.c3 * 1e9, "nF", 1e-9, 0, g));
+        ctl.push_back(element("c5", "C5 output cap", 0.5, 100, 10, p.c5 * 1e6, "uF", 1e-6, 1, g));
+        g = "Transformers";
+        ctl.push_back(custom("ratio:in", "Input step-up", 1, 10, 4, p.in.n, ":1", 1, g));
+        ctl.push_back(custom("ratio:out", "Output step-down", 1, 10, 3, 1 / p.out.n, ":1", 1, g));
+        coreControls(ctl, *ckt.coreOut);
+        for (auto& q : ctl)
+            if (!std::strcmp(q.group, "Core")) q.group = "Output transformer core";
+        auto node = [&](const char* s) { return ckt.c.node(s); };
+        prb = { { "j (to sidechain)", node("j") }, { "att (cell)", node("att") }, { "V1A plate", node("p1a") },
+                { "V2A cathode", node("k2a") }, { "output", node("out") },
+                { "V4 plate", ckt.sc.node("p4"), 1 }, { "EL panel", ckt.elNode, 1 } };
+    }
+
+    void prepare(double sampleRate) override { ckt.prepare(sampleRate, 4); }   // sidechain at 1/4 rate
+    void warmStart() override { ckt.c.warmStart(); ckt.sc.warmStart(); }
+    long failureCount() const override { return ckt.c.failures + ckt.sc.failures; }
+    double probeVoltage(size_t k) const override
+    {
+        return prb[k].circuit ? ckt.sc.x(prb[k].node) : ckt.c.x(prb[k].node);
+    }
+    double gainReductionDb() const override { return 20 * std::log10(darkRef / attenuation(ckt.t4->resistance())); }
+    double process(double x) override
+    {
+        ckt.process(x * inVolts);
+        return ckt.output() / (nominalGain * inVoltsDefault) * outGain;
+    }
+
+protected:
+    void applyOne(const Control& q, double raw) override
+    {
+        const std::string key = q.key;
+        const double x = raw * q.scale;
+        auto& t = *ckt.t4;
+        if (q.target == Target::Element && key.rfind("sc:", 0) == 0) { ckt.sc.setValueDeferred(ckt.scel[key.substr(3)], x); return; }
+        if (q.target != Target::Custom) { BenchCircuit::applyOne(q, raw); return; }
+        if (key == "gain") ckt.setGain(raw / 100, p);
+        else if (key == "peak") ckt.setPeak(raw / 100, p);
+        else if (key == "bplus") ckt.setSupply(raw);
+        else if (key == "ratio:in") ckt.c.setRatioDeferred(0, raw);
+        else if (key == "ratio:out") ckt.c.setRatioDeferred(1, 1 / raw);
+        else if (key == "t4:rfull") t.gFull = 1 / raw;
+        else if (key == "t4:rdark") { t.rDark = raw * 1e6; darkRef = attenuation(t.rDark); }
+        else if (key == "t4:vref") t.vRef = raw;
+        else if (key == "t4:vthresh") t.vThresh = raw;
+        else if (key == "t4:taulight") t.tauLight = raw * 1e-3;
+        else if (key == "t4:gamma") t.gamma = raw;
+        else if (key == "t4:fast") t.fastShare = raw;
+        else if (key == "t4:fastoff") t.tauFastOff = raw * 1e-3;
+        else if (key == "t4:slowoff") t.tauSlowOff = raw;
+        else if (key == "t4:mem") t.memStretch = raw;
+        else if (key == "t4:memoff") t.tauMemOff = raw;
+    }
+    void rebuild() override
+    {
+        ckt.c.rebuildIfDirty();
+        ckt.sc.rebuildIfDirty();
+    }
+
+private:
+    LA2AParams p;
+    LA2A ckt;
+    double darkRef = 1;
+
+    static Control custom(const char* key, const char* name, double lo, double hi, double centre, double def,
+                          const char* unit, int dec, const char* g)
+    {
+        return { { key, name, lo, hi, centre, def, unit, dec, false }, Target::Custom, key, 1, g };
+    }
+
+    // attenuator transfer s7 -> att for a cell resistance: the secondary's
+    // Thevenin source, R6, the Peak Reduction pot's load at j, R7, the cell
+    // shunted by the Gain pot. The ratio to the dark value is the gain reduction
+    // (the real unit meters it the same way, from a second, matched cell).
+    double attenuation(double rcell) const
+    {
+        auto par = [](double a, double b) { return a * b / (a + b); };
+        const double r5 = ckt.c.value(ckt.el.at("r5")), r6 = ckt.c.value(ckt.el.at("r6")), r7 = ckt.c.value(ckt.el.at("r7"));
+        const double rth = par(p.rsrc * p.in.n * p.in.n + p.in.rs, r5);
+        const double za = par(rcell, p.gainPot), zb = r7 + za, zj = par(p.peakPot, zb);
+        return zj / (rth + r6 + zj) * za / zb;
+    }
+};
+
+inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer", "LA-2A leveler" }; }
 
 inline std::unique_ptr<BenchCircuit> make(int index)
 {
@@ -253,6 +400,7 @@ inline std::unique_ptr<BenchCircuit> make(int index)
     case 0: return std::make_unique<TubePreBench>();
     case 1: return std::make_unique<SEOutputBench>();
     case 2: return std::make_unique<MicTransformerBench>();
+    case 3: return std::make_unique<LA2ABench>();
     default: return nullptr;
     }
 }
