@@ -53,6 +53,26 @@ if(CD_BUILD_TOOLS)
     target_link_libraries(la2a_render PRIVATE cd_circuit)
     target_compile_options(la2a_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
 
+    # Speaker driver in a closed box (sim/speaker/compare.py).
+    add_executable(speaker_render tools/speaker_render.cpp)
+    target_link_libraries(speaker_render PRIVATE cd_circuit)
+    target_compile_options(speaker_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # Cone-to-mic radiation IR (sim/speaker/radiation.py).
+    add_executable(radiation_check tools/radiation_check.cpp)
+    target_link_libraries(radiation_check PRIVATE cd_circuit)
+    target_compile_options(radiation_check PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # Cone breakup model (sim/speaker/cone.py).
+    add_executable(cone_check tools/cone_check.cpp)
+    target_link_libraries(cone_check PRIVATE cd_circuit)
+    target_compile_options(cone_check PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # The realtime cab: circuit + convolution vs the offline chain, cost, rebuild times.
+    add_executable(cab_check tools/cab_check.cpp)
+    target_link_libraries(cab_check PRIVATE cd_circuit)
+    target_compile_options(cab_check PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
     # Any netlist circuit in core/circuit/circuits by name (seout, ...).
     add_executable(circuit_render tools/circuit_render.cpp)
     target_link_libraries(circuit_render PRIVATE cd_circuit)

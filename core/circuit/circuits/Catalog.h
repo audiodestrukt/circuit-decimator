@@ -11,6 +11,7 @@
 
 #include "../Knobs.h"
 #include "LA2A.h"
+#include "../../acoustic/CabModel.h"
 #include "MicTransformer.h"
 #include "SEOutput.h"
 #include "ShinEi.h"
@@ -476,7 +477,106 @@ private:
     }
 };
 
-inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer", "LA-2A leveler", "Tokyo '68 fuzz (FY-2)" }; }
+// ---- speaker cab (docs/briefs/2026-09-26-speaker-cab.md) ------------------------------
+// The driver + box circuit per sample, convolved with the physics IR a worker
+// thread rebuilds when a knob moves (acoustic/CabModel.h). Defaults: the
+// Eminence Legend 1258 as calibrated in sim/speaker/, 50 l closed box, a
+// cardioid 2 cm capsule 2.5 cm from the dust cap.
+class CabBench : public BenchCircuit {
+public:
+    CabBench()
+    {
+        using namespace acoustic;
+        const auto p = legend1258();
+        auto add = [&](int idx, const char* key, const char* name, double lo, double hi, double centre, double scale,
+                       const char* unit, int dec, const char* g) {
+            ctl.push_back({ { key, name, lo, hi, centre, p[(size_t) idx] / scale, unit, dec, false }, Target::Custom, key, scale, g });
+            index.push_back(idx);
+        };
+        ctl.push_back({ { "amp", "Amp peak (full scale)", 1, 60, 10, 20, "V", 1, false }, Target::Custom, "amp", 1, "Input / output" });
+        index.push_back(-1);
+        ctl.push_back({ { "output", "Output", -36, 24, -36, 0, "dB", 1, false }, Target::Output, "", 1, "Input / output" });
+        index.push_back(-1);
+        const char* g = "Microphone";
+        add(kMicOffset, "micoff", "Across the cone", 0, 15, 5, 1e-2, "cm", 1, g);
+        add(kMicDistance, "micdist", "Distance", 0.5, 60, 5, 1e-2, "cm", 1, g);
+        add(kMicAngle, "micang", "Angle (towards centre)", -60, 60, -60, M_PI / 180, "deg", 0, g);
+        add(kMicCapsule, "miccap", "Capsule diameter", 3, 40, 15, 1e-3, "mm", 0, g);
+        add(kMicPattern, "micpat", "Pattern (1 omni, 0 fig-8)", 0, 1, 0, 1, "", 2, g);
+        g = "Cone";
+        add(kYoungs, "E", "Paper stiffness", 0.5, 10, 3, 1e9, "GPa", 2, g);
+        add(kDensity, "rho", "Paper density", 200, 1000, 450, 1, "kg/m3", 0, g);
+        add(kThickness, "h", "Thickness (edge)", 0.15, 1.0, 0.35, 1e-3, "mm", 3, g);
+        add(kTaper, "taper", "Thicker at the neck", 1, 3, 1, 1, "x", 2, g);
+        add(kRibs, "ribs", "Ribs (radial bend stiff.)", 1, 20, 3, 1, "x", 2, g);
+        add(kAniso, "aniso", "Hoop / radial stiffness", 0.2, 1, 0.2, 1, "", 2, g);
+        add(kLoss, "eta", "Paper loss", 0.005, 0.3, 0.05, 1, "", 3, g);
+        add(kDepth, "depth", "Depth", 2, 8, 2, 1e-2, "cm", 1, g);
+        add(kCurve, "curve", "Curvilinear", 0, 1.5, 0, 1, "", 2, g);
+        add(kDustCap, "dcr", "Dust cap radius", 2.5, 7, 2.5, 1e-2, "cm", 1, g);
+        add(kCapMass, "dcm", "Dust cap mass", 0.1, 3, 0.7, 1e-3, "g", 2, g);
+        g = "Surround";
+        add(kSurroundR, "sr", "Damping", 0.05, 3, 0.8, 1, "N s/m", 2, g);
+        add(kSurroundKr, "skr", "Radial stiffness", 10, 10000, 300, 1e3, "kN/m", 0, g);
+        g = "Driver";
+        add(kRe, "re", "Re", 2, 16, 2, 1, "Ohm", 2, g);
+        add(kLe, "le", "Le", 0.05, 3, 0.5, 1e-3, "mH", 3, g);
+        add(kL2, "l2", "L2 (eddy)", 0.01, 5, 1, 1e-3, "mH", 3, g);
+        add(kR2, "r2", "R2 (eddy)", 0.5, 50, 7, 1, "Ohm", 2, g);
+        add(kBl, "bl", "Bl", 4, 25, 4, 1, "T m", 2, g);
+        add(kMms, "mms", "Mms", 10, 80, 30, 1e-3, "g", 1, g);
+        add(kCms, "cms", "Cms", 0.02, 0.5, 0.1, 1e-3, "mm/N", 4, g);
+        add(kRms, "rms", "Rms", 0.5, 10, 3, 1, "N s/m", 2, g);
+        g = "Box";
+        add(kVb, "vb", "Volume (closed back)", 10, 200, 50, 1e-3, "l", 0, g);
+        add(kQa, "qa", "Absorption Q", 2, 100, 20, 1, "", 1, g);
+
+        cab.prepare(48000);   // a scratch build for the normalisation; prepare() redoes it at the run rate
+        c = &cab.circuit();
+        el = nullptr;
+        inVolts = inVoltsDefault = 20;
+        nominalGain = measureGain();
+        auto node = [&](const char* s2) { return cab.circuit().node(s2); };
+        prb = { { "amp (V)", node("amp") }, { "coil back-EMF (V)", node("coil") }, { "cone velocity (m/s)", node("u") } };
+    }
+
+    void prepare(double sampleRate) override
+    {
+        cab.prepare(sampleRate);
+        c = &cab.circuit();
+    }
+    void warmStart() override { cab.circuit().warmStart(); }
+    double process(double x) override { return cab.process(x * inVolts) / (nominalGain * inVoltsDefault) * outGain; }
+
+protected:
+    void applyOne(const Control& q, double raw) override
+    {
+        const size_t k = (size_t) (&q - ctl.data());
+        if (k < index.size() && index[k] >= 0) { cab.set(index[k], raw * q.scale); return; }
+        if (!std::strcmp(q.key, "amp")) { inVolts = raw; return; }
+        BenchCircuit::applyOne(q, raw);
+    }
+    void rebuild() override { cab.applyCircuit(); }
+
+private:
+    acoustic::Cab cab;
+    std::vector<int> index;   // per control: the CabParam it sets (-1: handled here)
+
+    // mic output per amp volt at 1 kHz with the defaults: the level that plays at unity
+    double measureGain()
+    {
+        const double fs = 48000, f = 1000;
+        double pk = 0;
+        for (int i = 0; i < 4800; ++i) {
+            const double y = cab.process(std::sin(2 * M_PI * f * i / fs));
+            if (i > 2400) pk = std::max(pk, std::abs(y));
+        }
+        cab.circuit().warmStart();
+        return pk;
+    }
+};
+
+inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer", "LA-2A leveler", "Tokyo '68 fuzz (FY-2)", "Speaker cab (1x12)" }; }
 
 inline std::unique_ptr<BenchCircuit> make(int index)
 {
@@ -486,6 +586,7 @@ inline std::unique_ptr<BenchCircuit> make(int index)
     case 2: return std::make_unique<MicTransformerBench>();
     case 3: return std::make_unique<LA2ABench>();
     case 4: return std::make_unique<ShinEiBench>();
+    case 5: return std::make_unique<CabBench>();
     default: return nullptr;
     }
 }

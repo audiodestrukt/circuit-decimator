@@ -17,3 +17,5 @@ sim/tubepre/renders/
 sim/tubepre/*.dat
 sim/tubeout/renders/
 sim/tubeout/*.dat
+sim/speaker/renders/
+sim/shinei/renders/

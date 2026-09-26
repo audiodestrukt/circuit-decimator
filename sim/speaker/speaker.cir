@@ -1,0 +1,57 @@
+* Loudspeaker driver in a closed box -- the spec for core/circuit/circuits/Speaker.h.
+* Electrical side as-is; mechanical and acoustic sides in the MOBILITY analogy
+* (velocity <-> voltage, force <-> current), so the motor (Bl) and the cone
+* area (Sd) are ideal transformers:
+*   node u: cone velocity (m/s)   Mms -> C, Cms -> L, Rms -> 1/Rms ohm
+*   node q: volume velocity       Cab = Vb/(rho c^2) -> L, box loss R_ab -> 1/R_ab ohm
+* Generic 12" guitar speaker (typical published figures), 50 l closed box.
+
+.param ramp=0.05 re=6.4 le=0.4m l2=0.8m r2=12
+.param bl=12 mms=0.022 cms=1.8e-4 rms=1.84 sd=0.053
+.param vb=0.05 qa=20 rho=1.204 c0=343
+.param cab={vb/(rho*c0*c0)}
+.param fs0={1/(2*3.14159265358979*sqrt(mms*cms))}
+.param vas={rho*c0*c0*sd*sd*cms}
+.param fc={fs0*sqrt(1 + vas/vb)}
+.param rabinv={2*3.14159265358979*fc*cab*qa}
+
+Vin src 0 dc 0 ac 1 pulse(0 1 1m 1n 1n 1 2)
+Ramp src amp {ramp}
+Re amp vc {re}
+Le vc le {le}
+L2 le coil {l2}
+R2 le coil {r2}
+
+* motor: v(u) = v(coil)/Bl, force (current into u) = Bl i(coil)
+Exm u xm coil 0 {1/bl}
+Vxm xm 0 0
+Fxm 0 coil Vxm {1/bl}
+
+Cmms u 0 {mms}
+* ngspice needs a resistance in series with each shunt inductor (a DC loop with
+* the transformer's E source otherwise); 1e-12 ohm against >= 1e-5 ohm reactance
+Lcms u lc {cms}
+Rlc lc 0 1e-12
+Rrms u 0 {1/rms}
+
+* cone area: v(q) = Sd v(u)
+Exc q xc u 0 {sd}
+Vxc xc 0 0
+Fxc 0 u Vxc {sd}
+
+Lcab q lq {cab}
+Rlq lq 0 1e-12
+Rrab q 0 {rabinv}
+
+.control
+set wr_singlescale
+set wr_vecnames
+ac dec 60 10 20k
+let z = -v(src) / i(Vin)
+let hu = v(u) / v(src)
+wrdata ac.dat mag(hu) ph(hu) mag(z) ph(z)
+tran 10.4167u 0.1 0 10.4167u
+wrdata step.dat v(u) i(Vin)
+quit
+.endc
+.end
