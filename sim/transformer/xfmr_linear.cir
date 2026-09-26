@@ -1,0 +1,67 @@
+* 1:10 mic input transformer, linear model -- two equivalent forms.
+*
+*  A) physical: two coupled windings (L1, L2, K), as the part is built
+*  B) referred: everything on the primary side, secondary values scaled by
+*     n^2, output voltage x n. This is the form the realtime solver uses and
+*     where the nonlinear core (magnetizing branch) plugs in.
+*
+*   src --Rsrc--Rp--Ll1--+--Ll2'--Rs'--+-- s' --> out = n * v(s')
+*                        |             |
+*                        Lm            Cs' || Rload' || (Rz'+Cz')
+*                        |             |
+*                       gnd           gnd
+*
+* Values are a plausible generic mic transformer, not any specific product.
+
+* ---- knobs -----------------------------------------------------------------
+* turns ratio (secondary/primary)
+.param n=10
+* mic source impedance
+.param rsrc=150
+* winding resistances: primary, secondary
+.param rp=30 rs=2500
+* magnetizing inductance (primary side) and leakage (primary, secondary side)
+.param lm=8 ll1=0.2m ll2=20m
+* secondary shunt capacitance (winding + wiring)
+.param cs=100p
+* load on the secondary (mic pre input) and the damping (Zobel) network
+.param rload=150k rz=100k cz=100p
+
+* ---- derived: coupled-inductor form ----------------------------------------
+.param l1={lm + ll1}
+.param l2={n*n*lm + ll2}
+.param kc={n*lm / sqrt(l1 * l2)}
+
+Vin src 0 DC 0 AC 1 SIN(0 0.1 1k)
+
+* ---- A) physical --------------------------------------------------------------
+RsA src a1 {rsrc + rp}
+L1A a1 0 {l1}
+L2A a2 0 {l2}
+KA L1A L2A {kc}
+RwA a2 outA {rs}
+CsA outA 0 {cs}
+RlA outA 0 {rload}
+RzA outA zA {rz}
+CzA zA 0 {cz}
+
+* ---- B) referred to primary ---------------------------------------------------
+RsB src b1 {rsrc + rp}
+Ll1B b1 m {ll1}
+LmB m 0 {lm}
+Ll2B m b2 {ll2 / (n*n)}
+RwB b2 sB {rs / (n*n)}
+CsB sB 0 {cs * n*n}
+RlB sB 0 {rload / (n*n)}
+RzB sB zB {rz / (n*n)}
+CzB zB 0 {cz * n*n}
+EoutB outB 0 sB 0 {n}
+
+.control
+ac dec 200 1 200k
+set wr_singlescale
+set wr_vecnames
+wrdata ac.dat vdb(outA) vp(outA) vdb(outB) vp(outB)
+quit
+.endc
+.end

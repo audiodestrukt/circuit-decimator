@@ -16,6 +16,10 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, sosfilt, resample_poly
 
+# ngspice's OpenMP threading makes runs non-deterministic (different timestep
+# sequences, occasionally a wrong trajectory), worst when many run in parallel.
+os.environ["OMP_NUM_THREADS"] = "1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DECK = os.path.join(HERE, "fuzzface.cir")
 FS = 48000

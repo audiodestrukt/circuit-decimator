@@ -1,0 +1,6 @@
+## Engine expansion — kickoff brief (2026-09-26)
+- **Problem:** the workshop can only model one hand-built fuzz circuit; to find sounds worth selling it needs more interesting parts, starting with transformers (the character of mic pres and consoles) and simple tube stages.
+- **Done looks like:** a mic-pre input transformer as a standalone element, an ngspice reference and a realtime C++ model that agree, and a sweep that shows its signature (LF distortion rising with level and falling frequency, the HF resonance/roll-off from leakage and capacitance). Then listen to it.
+- **Not now:** deep tube physics (tubes get a simple curve/LUT model later); power supplies (separate reusable module later: toroidal linear, tube rectifier, bridge, switching); Daisy/Teensy; the LA-2A opto cell; a product UI; the general netlist engine (next slice, once the transformer proves interesting).
+- **First slice:** transformer model in two layers: (1) linear: winding R, leakage + magnetizing L, winding capacitance, damping network; (2) core nonlinearity: saturation + hysteresis (Jiles–Atherton), the physical cause of the "iron" low-end thickening. Each layer checked against ngspice, swept for its signature, rendered to audio.
+- **Open question:** whether core hysteresis runs realtime and stays stable inside the solver (it has memory and is stiff).

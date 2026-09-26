@@ -1,0 +1,73 @@
+* 1:10 mic input transformer with a nonlinear core (Jiles-Atherton hysteresis).
+*
+* Same referred-to-primary circuit as xfmr_linear.cir, but the magnetizing
+* inductance is replaced by the core itself:
+*   winding voltage v(m) -> flux linkage lam = integral(v(m))      (node lam)
+*   flux density         B = lam / (np * ac)
+*   magnetization        M, integrated from dM/dB * dB/dt          (node mm, M/Ms)
+*   field                H = B/mu0 - M
+*   magnetizing current  i = H * le / np
+* JA ("inverse", B-driven) with the delta_M correction:
+*   He = H + alpha M,  Man = Ms L(He/a),  delta = sign(dB/dt)
+*   dM/dH = [ (1-c) dM (Man-M) / ((1-c) delta k - alpha (Man-M)) + c dMan/dHe ] / [1 - c alpha dMan/dHe]
+*   dM/dB = dM/dH / (mu0 (1 + dM/dH))
+* where dM = 1 when (Man - M) has the sign of delta, else 0.
+
+* ---- circuit (see xfmr_linear.cir) ------------------------------------------
+.param n=10 rsrc=150 rp=30 rs=2500 ll1=0.2m ll2=20m cs=100p
+.param rload=150k rz=100k cz=100p
+* ---- core: turns (primary), cross-section m^2, magnetic path length m -------
+.param np=1000 ac=0.5e-4 le=0.05
+* ---- Jiles-Atherton: saturation (A/m), shape a, coupling alpha, pinning k, reversibility c
+.param ms=6.4e5 ja=8.5 alpha=1e-5 kpin=4 cr=0.2
+.param mu0=1.25663706e-6
+* ---- drive: sine amplitude (V peak at the mic source) and frequency; run length
+.param amp=1 freq=50 cycles=12
+
+.func lang(x) {abs(x) < 1e-4 ? x/3 : cosh(x)/sinh(x) - 1/x}
+.func dlang(x) {abs(x) < 1e-4 ? 1/3 - x*x/15 : 1/(x*x) - 1/(sinh(x)*sinh(x))}
+.func clampx(x) {min(max(x, -80), 80)}
+
+* sine faded in over 4 cycles: flux builds up symmetrically, so there is no
+* switch-on (inrush) DC offset stuck in the core's remanence
+Bvin src 0 V={amp * sin(2*3.14159265358979*freq*time) * min(1, time*freq/4)}
+Rs1 src b1 {rsrc + rp}
+Ll1 b1 m {ll1}
+Ll2 m b2 {ll2 / (n*n)}
+Rw2 b2 s {rs / (n*n)}
+Cs2 s 0 {cs * n*n}
+Rl2 s 0 {rload / (n*n)}
+Rz2 s z {rz / (n*n)}
+Cz2 z 0 {cz * n*n}
+Eout out 0 s 0 {n}
+
+* ---- core ---------------------------------------------------------------------
+* flux linkage integrator
+Glam 0 lam cur={v(m)}
+Clam lam 0 1
+Rlam lam 0 1e15
+* magnetization state (normalised M/Ms) integrator
+Gmm 0 mm cur={v(dmdb) / ms * v(m) / (np*ac)}
+Cmm mm 0 1
+Rmm mm 0 1e15
+* intermediate quantities as behavioural voltages (units: A/m, T)
+Bbb bb 0 V={v(lam) / (np*ac)}
+Bhh hh 0 V={v(bb)/mu0 - ms*v(mm)}
+Bhe he 0 V={v(hh) + alpha*ms*v(mm)}
+Bman man 0 V={ms * lang(clampx(v(he)/ja))}
+Bdman dman 0 V={ms/ja * dlang(clampx(v(he)/ja))}
+Bdel del 0 V={v(m) >= 0 ? 1 : -1}
+Bdmdh dmdh 0 V={((1-cr) * (((v(man) - ms*v(mm)) * v(del) > 0) ? 1 : 0) * (v(man) - ms*v(mm)) / ((1-cr)*v(del)*kpin - alpha*(v(man) - ms*v(mm))) + cr*v(dman)) / (1 - cr*alpha*v(dman))}
+Bdmdb dmdb 0 V={v(dmdh) / (mu0 * (1 + v(dmdh)))}
+* the winding draws the magnetizing current
+Bim m 0 I={v(hh) * le / np}
+
+.options reltol=1e-4 abstol=1e-12 vntol=1e-7
+.control
+set wr_singlescale
+set wr_vecnames
+tran 1e-4 0.1 0 1e-4
+wrdata core.dat v(out) v(bb) v(hh)
+quit
+.endc
+.end

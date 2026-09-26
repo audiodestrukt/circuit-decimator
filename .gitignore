@@ -11,3 +11,9 @@ search/runs/
 __pycache__/
 *.pyc
 tools/embedded/*.elf
+sim/transformer/renders/
+sim/transformer/*.dat
+sim/tubepre/renders/
+sim/tubepre/*.dat
+sim/tubeout/renders/
+sim/tubeout/*.dat

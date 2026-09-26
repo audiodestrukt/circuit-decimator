@@ -29,6 +29,25 @@ if(CD_BUILD_TOOLS)
     add_executable(ff_render tools/ff_render.cpp)
     target_link_libraries(ff_render PRIVATE cd_circuit)
 
+    # Tube mic pre (transformer + 12AX7) on the general engine; sim/tubepre checks it.
+    add_executable(tubepre_render tools/tubepre_render.cpp)
+    target_link_libraries(tubepre_render PRIVATE cd_circuit)
+    target_compile_options(tubepre_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # Any netlist circuit in core/circuit/circuits by name (seout, ...).
+    add_executable(circuit_render tools/circuit_render.cpp)
+    target_link_libraries(circuit_render PRIVATE cd_circuit)
+    target_compile_options(circuit_render PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # The general engine must reproduce the hand-built solvers (transformer, fuzz).
+    add_executable(net_selftest tools/net_selftest.cpp)
+    target_link_libraries(net_selftest PRIVATE cd_circuit)
+    target_compile_options(net_selftest PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # Offline harness for the transformer model; sim/transformer checks it against ngspice.
+    add_executable(xfmr_render tools/xfmr_render.cpp)
+    target_link_libraries(xfmr_render PRIVATE cd_circuit)
+
     # C API over the solver + knob mapping, loaded by search/explore.py via ctypes.
     add_library(fuzzface SHARED tools/ff_capi.cpp)
     target_link_libraries(fuzzface PRIVATE cd_circuit)
@@ -62,6 +81,7 @@ target_compile_definitions(cd_core INTERFACE
 # ---- products
 add_subdirectory(products/workbench)
 add_subdirectory(products/phys-fuzz)
+add_subdirectory(products/iron)
 
 # ---- headless VST3 host: renders a WAV through any built plugin (with automation)
 if(CD_BUILD_TOOLS)

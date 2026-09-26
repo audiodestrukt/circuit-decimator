@@ -1,0 +1,89 @@
+* Tube mic preamp: 150 ohm mic -> 1:10 input transformer (hysteretic core)
+* -> 12AX7 common-cathode stage -> output coupling cap. Ideal 250 V supply
+* (power supplies are a separate module later).
+*
+*  mic --Rsrc+Rp--Ll1--+--[1:n]--Ll2--Rs--+--Rg--grid       B+ --Ra-- plate --Cc-- out
+*                      |                  |                                        |
+*                    core                Cs, Rload, Rz+Cz     cathode --Rk||Ck-- gnd  Rout
+*
+* The core block is the same Jiles-Atherton model as ../transformer/xfmr_core.cir.
+* The triode is Koren's curve model (12AX7) with a simple grid-conduction
+* current and datasheet inter-electrode capacitances.
+
+* ---- transformer (see ../transformer) --------------------------------------
+.param n=10 rsrc=150 rp=30 rs=2500 ll1=0.2m ll2=20m cs=100p
+.param rload=150k rz=100k cz=100p
+.param np=1000 ac=0.5e-4 le=0.05
+.param ms=6.4e5 ja=8.5 alpha=1e-5 kpin=4 cr=0.2
+.param mu0=1.25663706e-6
+* ---- tube stage --------------------------------------------------------------
+.param bplus=250 ra=100k rk=1.5k ck=22u rg=2.2k cc=100n rout=1meg
+.param mu=100 ex=1.4 kg1=1060 kp=600 kvb=300 kgc=4e-4
+.param cgk=1.6p cgp=1.7p cpk=0.46p
+* ---- drive ---------------------------------------------------------------------
+.param amp=0.01 freq=1000 cycles=12
+
+.func lang(x) {abs(x) < 1e-4 ? x/3 : cosh(x)/sinh(x) - 1/x}
+.func dlang(x) {abs(x) < 1e-4 ? 1/3 - x*x/15 : 1/(x*x) - 1/(sinh(x)*sinh(x))}
+.func clampx(x) {min(max(x, -80), 80)}
+.func softplus(x) {x > 30 ? x : ln(1 + exp(x))}
+
+* ---- mic (sine faded in over 4 cycles: no inrush offset in the core) ------------
+Bvin src 0 V={amp * sin(2*3.14159265358979*freq*time) * min(1, time*freq/4)}
+Rs1 src b1 {rsrc + rp}
+Ll1 b1 m {ll1}
+
+* ---- core on the primary (magnetizing branch) ----------------------------------
+Glam 0 lam cur={v(m)}
+Clam lam 0 1
+Rlam lam 0 1e15
+Gmm 0 mm cur={v(dmdb) / ms * v(m) / (np*ac)}
+Cmm mm 0 1
+Rmm mm 0 1e15
+Bbb bb 0 V={v(lam) / (np*ac)}
+Bhh hh 0 V={v(bb)/mu0 - ms*v(mm)}
+Bhe he 0 V={v(hh) + alpha*ms*v(mm)}
+Bman man 0 V={ms * lang(clampx(v(he)/ja))}
+Bdman dman 0 V={ms/ja * dlang(clampx(v(he)/ja))}
+Bdel del 0 V={v(m) >= 0 ? 1 : -1}
+Bdmdh dmdh 0 V={((1-cr) * (((v(man) - ms*v(mm)) * v(del) > 0) ? 1 : 0) * (v(man) - ms*v(mm)) / ((1-cr)*v(del)*kpin - alpha*(v(man) - ms*v(mm))) + cr*v(dman)) / (1 - cr*alpha*v(dman))}
+Bdmdb dmdb 0 V={v(dmdh) / (mu0 * (1 + v(dmdh)))}
+Bim m 0 I={v(hh) * le / np}
+
+* ---- ideal 1:n transformer, then the real secondary -----------------------------
+Exf sp xs m 0 {n}
+Vxf xs 0 0
+Fxf 0 m Vxf {n}
+Ll2 sp b2 {ll2}
+Rw2 b2 s {rs}
+Cs2 s 0 {cs}
+Rl2 s 0 {rload}
+Rz2 s z {rz}
+Cz2 z 0 {cz}
+
+* ---- 12AX7 common-cathode stage -------------------------------------------------
+Vbp bp 0 {bplus}
+Ra bp plate {ra}
+Rgs s grid {rg}
+Rk cath 0 {rk}
+Ck cath 0 {ck}
+Cgk grid cath {cgk}
+Cgp grid plate {cgp}
+Cpk plate cath {cpk}
+Be1 e1 0 V={max(v(plate,cath), 0) / kp * softplus(kp * (1/mu + v(grid,cath) / sqrt(kvb + max(v(plate,cath),0)**2)))}
+Bip plate cath I={v(e1) > 0 ? 2 * pwr(v(e1), ex) / kg1 : 0}
+Big grid cath I={kgc * pwr(0.05 * softplus(v(grid,cath) / 0.05), 1.5)}
+Cc plate out {cc}
+Rout out 0 {rout}
+
+.options reltol=1e-4 abstol=1e-12 vntol=1e-7
+.control
+set wr_singlescale
+set wr_vecnames
+op
+print v(plate) v(cath) v(grid)
+tran 1e-5 0.012 0 1e-5
+wrdata tube.dat v(out) v(bb) v(hh) v(plate)
+quit
+.endc
+.end
