@@ -37,6 +37,10 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     cd::FuzzEngine engine;
 
+    // "circuit" parameter: which fuzz the knobs drive (cd::FuzzEngine::Model)
+    static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    cd::FuzzEngine::Model circuit() const;
+
 private:
     void workbenchKnobs(double* out) const;
     int currentProgram = 0;

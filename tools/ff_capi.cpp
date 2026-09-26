@@ -4,6 +4,7 @@
 // at the oversampled rate, applies the same input/output gains as the plugin
 // (minus oversampling filters and DC blocking, which the caller does).
 #include "circuit/Knobs.h"
+#include "circuit/circuits/ShinEi.h"
 #include "phys-fuzz/Macros.h"
 
 extern "C" {
@@ -50,6 +51,32 @@ void ff_render(const double* knobs, const float* in, float* out, int n, double f
         stats[0] = n > 0 ? (double) sum / n : 0;
         stats[1] = mx;
         stats[2] = (double) ff.failures;
+    }
+}
+
+
+// Same, through the Shin-Ei FY-2 netlist (core/circuit/circuits/ShinEi.h) on the
+// same knob surface (knobsToShinEi) and its own output scale.
+void ff_render_shinei(const double* knobs, const float* in, float* out, int n, double fs, int maxIterations,
+                      double* stats)
+{
+    cd::ShinEi se;
+    se.build(cd::knobsToShinEi(knobs));
+    se.c.maxIterations = maxIterations;
+    se.c.prepare(fs);
+    const double gIn = std::pow(10.0, knobs[cd::kInput] / 20.0) * cd::kPickupVolts;
+    const double gOut = std::pow(10.0, knobs[cd::kOutput] / 20.0) * cd::kOutputScaleShinEi;
+    long sum = 0;
+    int mx = 0;
+    for (int i = 0; i < n; ++i) {
+        out[i] = (float) (se.process(in[i] * gIn) * gOut);
+        sum += se.c.lastIterations;
+        mx = std::max(mx, se.c.lastIterations);
+    }
+    if (stats) {
+        stats[0] = n > 0 ? (double) sum / n : 0;
+        stats[1] = mx;
+        stats[2] = (double) se.c.failures;
     }
 }
 

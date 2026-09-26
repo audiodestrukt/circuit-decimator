@@ -8,8 +8,9 @@
 // window (copper brightens with signal, Age turns it verdigris). The knobs
 // that change the circuit's condition (Battery, Age, Temperature) sit under
 // the board; the playing knobs (Fuzz, Volume) and the level (Output) run down
-// the right like a pedal's control column. Designed on a 960x640 canvas and
-// scaled as a whole.
+// the right like a pedal's control column. The circuit selector (Fuzz Face /
+// Shin-Ei FY-2) sits above the board: the board redraws as that pedal.
+// Designed on a 960x640 canvas and scaled as a whole.
 class PhysFuzzEditor : public juce::AudioProcessorEditor, private juce::Timer {
 public:
     explicit PhysFuzzEditor(PhysFuzzProcessor& p)
@@ -38,6 +39,13 @@ public:
             if (presets.getSelectedId() > 0) processor.setCurrentProgram(presets.getSelectedId() - 1);
         };
         addAndMakeVisible(presets);
+
+        for (int i = 0; i < cd::FuzzEngine::kNumModels; ++i)
+            circuits.addItem(cd::FuzzEngine::modelName((cd::FuzzEngine::Model) i), i + 1);
+        circuits.setTitle("Circuit");
+        circuitAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+            processor.apvts, "circuit", circuits);
+        addAndMakeVisible(circuits);
 
         setResizable(true, true);
         setResizeLimits(672, 448, 1920, 1280);
@@ -102,6 +110,7 @@ public:
         panel = pf::look::hammertonePanel(getWidth(), getHeight());
         circuit.setBounds(windowBounds());
         presets.setBounds((juce::Rectangle<float>(740, 22, 192, 32) * s).toNearestInt());
+        circuits.setBounds((juce::Rectangle<float>(492, 22, 200, 32) * s).toNearestInt());
         // knob centres, in knobs[] order: fuzz, volume, battery, age, temperature, output
         const juce::Point<float> centres[] = { { 836, 138 }, { 836, 320 }, { 150, 540 },
                                                { 360, 540 }, { 570, 540 }, { 836, 540 } };
@@ -125,7 +134,8 @@ private:
     CircuitView circuit;
     std::array<Knob, pf::kNumKnobs> knobs;
     int knobCount = 0;
-    juce::ComboBox presets;
+    juce::ComboBox presets, circuits;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> circuitAttachment;
     juce::Image panel;
 
     float scale() const { return (float) getWidth() / kW; }

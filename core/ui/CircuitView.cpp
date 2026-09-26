@@ -300,7 +300,30 @@ void CircuitView::paint(juce::Graphics& g)
     scale = juce::jmin((float) getWidth() / kW, (float) getHeight() / kH);
     const float ox = ((float) getWidth() - kW * scale) / 2, oy = ((float) getHeight() - kH * scale) / 2;
     g.addTransform(juce::AffineTransform::scale(scale).translated(ox, oy));
+    if (engine.modelInUse.load() == (int) cd::FuzzEngine::Model::ShinEi) paintShinEi(g);
+    else paintFuzzFace(g);
+}
 
+void CircuitView::legend(juce::Graphics& g) const
+{
+    const float lx = 760, ly = 585;
+    for (int i = 0; i < 100; ++i) {
+        g.setColour(voltageColour(9.0f * (float) i / 99));
+        g.fillRect(lx + 1.8f * (float) i, ly, 1.9f, 8.0f);
+    }
+    label(g, "0 V", { lx, ly + 20 }, 11);
+    label(g, "9 V", { lx + 180, ly + 20 }, 11, {}, juce::Justification::right);
+    g.setColour(kGlow.withAlpha(0.5f));
+    g.fillRoundedRectangle(lx - 200, ly - 1, 30, 10, 5);
+    label(g, "signal", { lx - 164, ly + 4 }, 11);
+    g.setColour(kHurt);
+    g.fillRoundedRectangle(lx - 110, ly - 1, 30, 10, 5);
+    label(g, "damage", { lx - 74, ly + 4 }, 11);
+}
+
+// ---------------------------------------------------------------- Fuzz Face
+void CircuitView::paintFuzzFace(juce::Graphics& g)
+{
     using N = cd::FuzzFace;
     const auto& k = knobs;
     const float vcc = (float) k[cd::kBattery];
@@ -460,18 +483,205 @@ void CircuitView::paint(juce::Graphics& g)
     label(g, "c " + volts(N::C2) + "  " + state, { 505, 222 }, 13,
           saturated || cutoff ? kHurt : voltageColour(mean(N::C2)));
 
-    // ---- legend
-    const float lx = 760, ly = 585;
-    for (int i = 0; i < 100; ++i) {
-        g.setColour(voltageColour(9.0f * (float) i / 99));
-        g.fillRect(lx + 1.8f * (float) i, ly, 1.9f, 8.0f);
+    legend(g);
+}
+
+// ---------------------------------------------------------------- Shin-Ei FY-2
+// Same canvas and primitives; the FY-2's own topology (ShinEi.h): two
+// collector-feedback stages, the Fuzz pot panning between their collectors,
+// the passive mid scoop, the volume pot.
+void CircuitView::paintShinEi(juce::Graphics& g)
+{
+    using S = cd::ShinEi;
+    const auto& k = knobs;
+    const float vcc = (float) k[cd::kBattery];
+
+    // damage per part, 0 = healthy (same knob semantics as the Fuzz Face)
+    const float dBattery = k[cd::kBattery] < 9 ? clamp01((9 - k[cd::kBattery]) / 5.5) : clamp01((k[cd::kBattery] - 9) / 6);
+    const float dSag = clamp01(std::log10(k[cd::kBatteryRes]) / std::log10(5000.0));
+    const float dBias = logDeviation(k[cd::kBias], 5.6, 15 / 5.6);
+    const float leak = (float) k[cd::kJunctionLeak];
+    const float dQ1 = juce::jmax(logDeviation(k[cd::kQ1Gain], 250, 50), leak);
+    const float dQ2 = juce::jmax(logDeviation(k[cd::kQ2Gain], 250, 50), leak);
+    const float dCin = (float) k[cd::kCapLeak];
+    const float tempC = (float) k[cd::kTemperature];
+
+    // ---- supply rail + battery
+    wire(g, { { 290, 40 }, { 830, 40 } }, S::VP);
+    resistor(g, { 830, 40 }, { 920, 40 }, dSag);
+    if (board()) wire(g, { { 920, 40 }, { 920, 170 } }, S::VP);
+    else { g.setColour(voltageColour(vcc)); g.drawLine(920, 40, 920, 170, 2.2f); }
+    battery(g, { 920, 170 }, { 920, 240 }, dBattery);
+    wire(g, { { 920, 240 }, { 920, 280 } }, GND);
+    ground(g, { 920, 280 });
+    capacitor(g, { 780, 40 }, { 780, 130 }, 0);
+    ground(g, { 780, 130 });
+    dot(g, { 780, 40 }, S::VP);
+
+    // ---- pickup + input (a row lower than the Fuzz Face: the feedback loop needs the room)
+    g.setColour(partColour(0));
+    g.drawEllipse(54, 524, 32, 32, 2.2f);
+    label(g, "~", { 70, 540 }, 20, partColour(0), juce::Justification::centred);
+    wire(g, { { 70, 556 }, { 70, 590 } }, GND);
+    ground(g, { 70, 590 });
+    wire(g, { { 70, 524 }, { 70, 480 }, { 90, 480 } }, S::P1);
+    inductor(g, { 90, 480 }, { 150, 480 });
+    wire(g, { { 150, 480 }, { 180, 480 } }, S::GIN);
+    capacitor(g, { 165, 480 }, { 165, 540 }, 0);
+    ground(g, { 165, 540 });
+    dot(g, { 165, 480 }, S::GIN);
+    capacitor(g, { 180, 480 }, { 240, 480 }, dCin);
+    if (k[cd::kCapLeak] > 0.001) {
+        const float a = 0.35f + 0.65f * dCin;
+        g.setColour(partColour(dCin).withAlpha(a));
+        g.drawLine(185, 480, 185, 450, 1.5f);
+        g.drawLine(235, 480, 235, 450, 1.5f);
+        resistor(g, { 185, 450 }, { 235, 450 }, dCin, a, true);
     }
-    label(g, "0 V", { lx, ly + 20 }, 11);
-    label(g, "9 V", { lx + 180, ly + 20 }, 11, {}, juce::Justification::right);
-    g.setColour(kGlow.withAlpha(0.5f));
-    g.fillRoundedRectangle(lx - 200, ly - 1, 30, 10, 5);
-    label(g, "signal", { lx - 164, ly + 4 }, 11);
-    g.setColour(kHurt);
-    g.fillRoundedRectangle(lx - 110, ly - 1, 30, 10, 5);
-    label(g, "damage", { lx - 74, ly + 4 }, 11);
+
+    // ---- Q1: collector-feedback bias (2M2 || 1000p), 22k load
+    wire(g, { { 240, 480 }, { 240, 380 }, { 250, 380 } }, S::B1);
+    wire(g, { { 150, 380 }, { 240, 380 } }, S::B1);
+    dot(g, { 240, 380 }, S::B1);
+    transistor(g, { 250, 380 }, dQ1, tempC);
+    wire(g, { { 290, 350 }, { 290, 260 } }, S::C1);
+    wire(g, { { 290, 410 }, { 290, 450 } }, GND);
+    ground(g, { 290, 450 });
+    resistor(g, { 290, 40 }, { 290, 260 }, 0);
+    dot(g, { 290, 40 }, S::VP);
+    wire(g, { { 290, 260 }, { 150, 260 } }, S::C1);
+    dot(g, { 290, 260 }, S::C1);
+    capacitor(g, { 150, 262 }, { 150, 378 }, 0);
+    resistor(g, { 200, 262 }, { 200, 378 }, 0);
+    dot(g, { 200, 260 }, S::C1);
+    dot(g, { 200, 380 }, S::B1);
+    if (leak > 0.001) resistor(g, { 278, 270 }, { 226, 372 }, leak, 0.35f + 0.65f * leak, true);
+
+    // ---- Q2: 47n coupling, 1M2 feedback bias, 47k load fed through 100k || 47n
+    capacitor(g, { 300, 260 }, { 360, 260 }, 0);
+    wire(g, { { 360, 260 }, { 430, 260 } }, S::B2);
+    dot(g, { 380, 260 }, S::B2);
+    resistor(g, { 380, 258 }, { 380, 182 }, dBias);
+    wire(g, { { 380, 180 }, { 470, 180 } }, S::C2);
+    transistor(g, { 430, 260 }, dQ2, tempC);
+    wire(g, { { 470, 230 }, { 470, 180 } }, S::C2);
+    wire(g, { { 470, 290 }, { 470, 330 } }, GND);
+    ground(g, { 470, 330 });
+    dot(g, { 470, 180 }, S::C2);
+    resistor(g, { 470, 180 }, { 470, 110 }, 0);
+    dot(g, { 470, 110 }, S::VA2);
+    resistor(g, { 470, 110 }, { 470, 40 }, 0);
+    dot(g, { 470, 40 }, S::VP);
+    wire(g, { { 470, 110 }, { 520, 110 } }, S::VA2);
+    capacitor(g, { 520, 110 }, { 520, 40 }, 0);
+    dot(g, { 520, 40 }, S::VP);
+    if (leak > 0.001) resistor(g, { 485, 212 }, { 410, 262 }, leak, 0.35f + 0.65f * leak, true);
+
+    // ---- fuzz pot: Q2 (3300p) into lug 1 at the top, Q1 (2200p) into the wiper, lug 3 = F
+    wire(g, { { 470, 180 }, { 600, 180 } }, S::C2);
+    capacitor(g, { 600, 180 }, { 660, 180 }, 0);
+    wire(g, { { 660, 180 }, { 700, 180 }, { 700, 200 } }, S::L1);
+    resistor(g, { 700, 200 }, { 700, 330 }, 0);
+    const float wy = 320 - (float) k[cd::kFuzz] * 110;
+    wiper(g, { 690, wy }, { 650, wy }, 0);
+    wire(g, { { 650, wy }, { 640, wy }, { 640, 560 }, { 420, 560 } }, S::FW);
+    capacitor(g, { 420, 560 }, { 360, 560 }, 0);
+    wire(g, { { 360, 560 }, { 330, 560 }, { 330, 300 }, { 290, 300 } }, S::C1);
+    dot(g, { 290, 300 }, S::C1);
+    wire(g, { { 700, 330 }, { 700, 360 }, { 740, 360 } }, S::F);
+    dot(g, { 740, 360 }, S::F);
+
+    // ---- mid scoop: 1000p bridged by 10k / 15k into 100n
+    capacitor(g, { 740, 360 }, { 800, 360 }, 0);
+    wire(g, { { 800, 360 }, { 860, 360 }, { 860, 380 } }, S::X);
+    dot(g, { 800, 360 }, S::X);
+    resistor(g, { 740, 362 }, { 740, 440 }, 0);
+    resistor(g, { 800, 362 }, { 800, 440 }, 0);
+    wire(g, { { 740, 440 }, { 800, 440 } }, S::S);
+    capacitor(g, { 770, 442 }, { 770, 500 }, 0);
+    ground(g, { 770, 500 });
+
+    // ---- volume pot -> OUT
+    resistor(g, { 860, 380 }, { 860, 500 }, 0);
+    ground(g, { 860, 500 });
+    const float vy = 400 + (1 - (float) k[cd::kVolume]) * 80;
+    wiper(g, { 870, vy }, { 910, vy }, 0);
+    wire(g, { { 910, vy }, { 940, vy } }, S::OUT);
+    if (board()) dot(g, { 946, vy }, S::OUT);
+    else { g.setColour(voltageColour(mean(S::OUT))); g.drawEllipse(940, vy - 6, 12, 12, 2.2f); }
+
+    // Q2 sits low on its starved supply; its collector decides gate vs. sing
+    const float vce = mean(S::C2), headroom = mean(S::VA2) - mean(S::C2);
+    const bool starved = vce < 0.3f, cut = headroom < 0.15f * juce::jmax(0.5f, mean(S::VA2));
+
+    if (board()) {
+        const auto silk = kSilk.withAlpha(0.72f);
+        const auto hot = kScorch;
+        label(g, "22k", { 305, 150 }, 20, silk);
+        label(g, "2M2", { 215, 320 }, 20, silk);
+        label(g, "1n", { 140, 320 }, 20, silk, juce::Justification::right);
+        label(g, "47n", { 210, 518 }, 20, dCin > 0.3f ? hot : silk, juce::Justification::centred);
+        label(g, "47n", { 330, 236 }, 20, silk, juce::Justification::centred);
+        label(g, "1M2", { 395, 220 }, 20, dBias > 0.3f ? hot : silk);
+        label(g, "47k", { 485, 145 }, 20, silk);
+        label(g, "100k", { 400, 75 }, 20, silk);
+        label(g, "47n", { 535, 75 }, 20, silk);
+        label(g, "3.3n", { 630, 150 }, 20, silk, juce::Justification::centred);
+        label(g, "2.2n", { 390, 590 }, 20, silk, juce::Justification::centred);
+        label(g, "50k", { 712, 265 }, 20, silk);
+        label(g, "1n", { 770, 335 }, 20, silk, juce::Justification::centred);
+        label(g, "10k", { 730, 400 }, 20, silk, juce::Justification::right);
+        label(g, "15k", { 812, 400 }, 20, silk);
+        label(g, "100n", { 785, 475 }, 20, silk);
+        label(g, "Q1", { 314, 394 }, 24, dQ1 > 0.3f ? hot : silk);
+        label(g, "Q2", { 494, 258 }, 24, dQ2 > 0.3f ? hot : silk);
+        label(g, "out", { 966, vy }, 22, silk);
+        label(g, "in", { 38, 540 }, 22, silk, juce::Justification::right);
+        label(g, juce::String(mean(S::VP), 1) + " V", { 900, 135 }, 26, dBattery > 0.3f ? hot : silk.withAlpha(0.95f),
+              juce::Justification::right);
+        if (starved || cut) label(g, starved ? "Q2 starved" : "Q2 cut off", { 494, 286 }, 20, hot);
+        return;
+    }
+
+    // ---- values
+    const auto val = juce::Colour(0xffb8bcc4);
+    label(g, "Battery Sag " + juce::String(juce::roundToInt(k[cd::kBatteryRes])) + juce::String::fromUTF8(" \xce\xa9"), { 875, 18 }, 12, dSag > 0.3f ? kHurt : val, juce::Justification::centred);
+    label(g, juce::String(vcc, 1) + " V battery", { 895, 205 }, 13, dBattery > 0.3f ? kHurt : val, juce::Justification::right);
+    label(g, "supply " + juce::String(k[cd::kSupplyCap], 1) + juce::String::fromUTF8(" \xc2\xb5" "F"), { 795, 90 }, 12, val);
+    label(g, "pickup", { 120, 455 }, 12, val, juce::Justification::centred);
+    label(g, "Cin 47 nF", { 210, 455 }, 12, dCin > 0.3f ? kHurt : val, juce::Justification::centred);
+    label(g, "22k", { 300, 150 }, 12, val);
+    label(g, "2M2", { 210, 320 }, 12, val);
+    label(g, "1n", { 140, 320 }, 12, val, juce::Justification::right);
+    label(g, "47n", { 330, 240 }, 12, val, juce::Justification::centred);
+    label(g, "Bias " + juce::String(1.2 * k[cd::kBias] / 5.6, 2) + "M", { 395, 220 }, 12, dBias > 0.3f ? kHurt : val);
+    label(g, "47k", { 482, 145 }, 12, val);
+    label(g, "100k", { 405, 75 }, 12, val);
+    label(g, "47n", { 532, 75 }, 12, val);
+    label(g, "3.3n", { 630, 160 }, 12, val, juce::Justification::centred);
+    label(g, "2.2n", { 390, 585 }, 12, val, juce::Justification::centred);
+    label(g, "Fuzz " + juce::String(k[cd::kFuzz], 2), { 712, 265 }, 12, val);
+    label(g, "1n", { 770, 340 }, 12, val, juce::Justification::centred);
+    label(g, "10k", { 730, 400 }, 12, val, juce::Justification::right);
+    label(g, "15k", { 810, 400 }, 12, val);
+    label(g, "100n", { 785, 475 }, 12, val);
+    label(g, "Volume " + juce::String(k[cd::kVolume], 2), { 875, 520 }, 12, val, juce::Justification::centred);
+    label(g, "OUT", { 960, vy }, 14, kPart);
+    const auto hfe = [&](int i) { return "hFE " + juce::String(juce::roundToInt(k[i])); };
+    const auto temp = juce::String(juce::roundToInt(tempC)) + juce::String::fromUTF8(" \xc2\xb0" "C");
+    label(g, "Q1  " + hfe(cd::kQ1Gain), { 312, 392 }, 12, dQ1 > 0.3f ? kHurt : val);
+    label(g, temp, { 312, 410 }, 12, val);
+    label(g, "Q2  " + hfe(cd::kQ2Gain), { 492, 258 }, 12, dQ2 > 0.3f ? kHurt : val);
+    label(g, temp, { 492, 276 }, 12, val);
+
+    // ---- live readouts
+    const auto volts = [&](int n) { return juce::String(mean(n), 2) + " V"; };
+    label(g, "rail " + volts(S::VP), { 600, 22 }, 13, voltageColour(mean(S::VP)), juce::Justification::centred);
+    label(g, "b " + volts(S::B1), { 248, 400 }, 12, voltageColour(mean(S::B1)), juce::Justification::right);
+    label(g, "c " + volts(S::C1), { 300, 285 }, 12, voltageColour(mean(S::C1)));
+    label(g, "b " + volts(S::B2), { 372, 285 }, 12, voltageColour(mean(S::B2)));
+    label(g, "supply " + volts(S::VA2), { 540, 110 }, 12, voltageColour(mean(S::VA2)));
+    const auto state = starved ? juce::String("saturated") : cut ? juce::String("cut off") : juce::String("biased");
+    label(g, "c " + volts(S::C2) + "  " + state, { 485, 200 }, 13, starved || cut ? kHurt : voltageColour(mean(S::C2)));
+    legend(g);
 }

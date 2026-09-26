@@ -5,8 +5,23 @@ PhysFuzzProcessor::PhysFuzzProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts(*this, nullptr, "state", cd::makeLayout(pf::kKnobs, pf::kNumKnobs))
+      apvts(*this, nullptr, "state", createLayout())
 {
+}
+
+// The knob table (Macros.h) plus the circuit selector.
+juce::AudioProcessorValueTreeState::ParameterLayout PhysFuzzProcessor::createLayout()
+{
+    auto layout = cd::makeLayout(pf::kKnobs, pf::kNumKnobs);
+    juce::StringArray names;
+    for (int i = 0; i < cd::FuzzEngine::kNumModels; ++i) names.add(cd::FuzzEngine::modelName((cd::FuzzEngine::Model) i));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID { "circuit", 1 }, "Circuit", names, 0));
+    return layout;
+}
+
+cd::FuzzEngine::Model PhysFuzzProcessor::circuit() const
+{
+    return (cd::FuzzEngine::Model) juce::roundToInt(apvts.getRawParameterValue("circuit")->load());
 }
 
 // Phys Fuzz knobs -> the workbench's full component surface (Macros.h).
@@ -21,6 +36,7 @@ void PhysFuzzProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     double knobs[cd::kNumKnobs];
     workbenchKnobs(knobs);
+    engine.setModel(circuit());
     engine.prepare(sampleRate, samplesPerBlock, knobs);
     setLatencySamples(engine.latencySamples());
 }
@@ -37,6 +53,7 @@ void PhysFuzzProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
 {
     double knobs[cd::kNumKnobs];
     workbenchKnobs(knobs);
+    engine.setModel(circuit());
     engine.process(buffer, getTotalNumInputChannels(), getTotalNumOutputChannels(), knobs);
 }
 

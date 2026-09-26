@@ -1,8 +1,13 @@
 # Circuit Decimator
 
 A VST3 fuzz whose "knobs" are component failures: a realtime circuit simulation
-of a Fuzz Face where you can starve the battery, leak the junctions, cook the
-transistors and automate all of it.
+of a Fuzz Face (or a Shin-Ei FY-2) where you can starve the battery, leak the
+junctions, cook the transistors and automate all of it.
+
+Product names in this repo (Fuzz Face, Shin-Ei, FY-2, LA-2A, ...) identify the
+circuits modeled; they are trademarks of their owners and there is no
+affiliation. Nothing a player sees uses them: the plugins name circuits by
+origin ("London '66", "Tokyo '68").
 
 A monorepo: one shared circuit core, one folder per product.
 
@@ -10,10 +15,12 @@ A monorepo: one shared circuit core, one folder per product.
 core/circuit/        FuzzFaceDK.h (realtime solver: nodal DK method, double or float, no JUCE/heap)
                      FuzzFace.h (reference MNA solver + shared transistor model; DC operating point)
                      Knobs.h (full control surface: ranges/curves/presets -> circuit values)
+                     circuits/ShinEi.h (Shin-Ei FY-2 as a netlist on the general engine, same knobs)
 core/engine/         FuzzEngine: the shared audio path (4x oversampling, smoothing, telemetry)
 core/ui/             CircuitView: live schematic (node voltages, signal glow, damage in red)
 products/workbench/  Circuit Decimator plugin (every component knob) + Circuit Bench app
-products/phys-fuzz/  Phys Fuzz plugin: Battery / Age / Temperature macros over the core
+products/phys-fuzz/  Phys Fuzz plugin: Battery / Age / Temperature macros over the core;
+                     Fuzz Face or Shin-Ei FY-2 (reference/ holds the FY-2 schematic)
 products/iron/       Iron plugin: tube line stage into a gapped single-ended output transformer
 sim/                 ngspice deck (the circuit spec), reference renders, solver-vs-ngspice check
 search/              MAP-Elites sound search over the knob space
@@ -49,13 +56,13 @@ The stats line shows CPU, Newton iterations per sample and solver failures.
 
 The **Circuit** menu switches between the fuzz workbench and the netlist
 circuits (tube mic pre, single-ended output stage = Iron's circuit, mic
-transformer). For those, every component is a knob in a scrolling panel
+transformer, LA-2A, Tokyo '68 = the FY-2 fuzz). For those, every component is a knob in a scrolling panel
 (transformer ratio, leakage, DCR, capacitances, load; core turns, area, path,
 gap and Jiles-Atherton steel; tube stage resistors, caps, B+ and the Koren curve),
 applied live without losing the circuit's state. A node meter shows each probe
 node's DC voltage and signal swing, and circuits with a core show the live B-H
 loop. `--circuit N` opens one directly (1 tube pre, 2 SE output, 3 mic
-transformer). Circuits live in `core/circuit/circuits/Catalog.h`.
+transformer, 4 LA-2A, 5 FY-2 fuzz). Circuits live in `core/circuit/circuits/Catalog.h`.
 
 For the fuzz workbench, the schematic is live: wire colour is each node's voltage (blue 0 V to amber
 9 V), a green glow shows where the signal swings, parts turn red as their knob
@@ -106,13 +113,31 @@ are failing. Condition knobs sit under the board; the playing knobs and level
 run down the right. Fonts: Michroma and Barlow (SIL OFL, in
 `products/phys-fuzz/assets/fonts`). Regenerate screenshots with
 `physfuzz_snapshot out.png sim/renders/input.wav --program N` (under xvfb-run on
-a headless box).
+a headless box; `circuit=1` for Tokyo '68).
 
 Six knobs: Fuzz, Volume, **Battery** (charge: voltage falls and sag climbs,
 0% is tuned to sputter, not die), **Age** (junction leak, dried caps, fading
 gain, cold bias drift), Temperature, Output. The mapping lives in
 `products/phys-fuzz/Macros.h` and is a first pass for tuning by ear; it's also
 exposed through libfuzzface so the search tools can sweep it.
+
+![Phys Fuzz, Tokyo '68](products/phys-fuzz/screenshots/companion.png)
+
+The **Circuit** menu above the board picks the pedal: **London '66** (the Fuzz
+Face circuit) or **Tokyo '68** (the Shin-Ei Companion FY-2 circuit:
+`core/circuit/circuits/ShinEi.h`, a netlist on the general engine mirroring
+`sim/shinei/shinei.cir`, which is traced from the schematic in
+`products/phys-fuzz/reference/`). Two collector-feedback silicon
+stages, the Fuzz pot panning between their collectors, then the passive mid
+scoop that makes it thin, gated and 30 dB quieter than the Fuzz Face (made up
+in the output scale). The same six knobs drive it through the shared knob
+surface: Battery, Temperature and gain fade map directly, Age's bias drift
+scales Q2's 1M2 feedback resistor and its junction leak runs over a gentler
+range (there is no bypass cap to dry out). Switching circuits warm-starts the
+new one at its DC point, so it can be automated. The board redraws as the FY-2
+with its own node telemetry; `sim/shinei/compare.py` checks the netlist
+against ngspice (bias identical, 2.5-3.6% RMS on the riff, no failures).
+Parameter value for `plugin_render`: `"circuit=Tokyo '68"`.
 
 ## Iron
 
@@ -143,8 +168,8 @@ nonlinear devices: BJT, Koren triode, Jiles-Atherton transformer core) and it
 derives the realtime DK solver automatically. It reproduces the hand-built
 solvers (`build/net_selftest`: transformer to 1e-9, fuzz to 2e-5 RMS) and runs
 the tube mic pre in `sim/tubepre` and a single-ended output transformer stage
-in `sim/tubeout` (circuits in `core/circuit/circuits/`, run any by name with
-`build/circuit_render`). The transformer core device has an air gap and starts
+in `sim/tubeout` and the Shin-Ei FY-2 fuzz in `sim/shinei` (circuits in
+`core/circuit/circuits/`, run any by name with `build/circuit_render`). The transformer core device has an air gap and starts
 magnetized by any DC it carries. New circuits should be netlists; the
 hand-built solvers below stay as references.
 

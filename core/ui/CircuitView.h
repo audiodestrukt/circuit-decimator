@@ -4,7 +4,8 @@
 
 #include "engine/FuzzEngine.h"
 
-// Live schematic of the Fuzz Face. Wire colour = node DC voltage (0 V blue ->
+// Live schematic of the fuzz the engine is running (Fuzz Face or Shin-Ei
+// FY-2, per FuzzEngine::modelInUse). Wire colour = node DC voltage (0 V blue ->
 // battery amber), wire glow = how much signal swings on that node, component
 // colour = how far its knob is from healthy (red = damaged). Leakage paths
 // appear as dashed resistors once their knob is up. Reads the engine's
@@ -26,6 +27,9 @@ public:
 
 private:
     void timerCallback() override;
+    void paintFuzzFace(juce::Graphics&);
+    void paintShinEi(juce::Graphics&);
+    void legend(juce::Graphics&) const;
 
     using Pt = juce::Point<float>;
     using Node = cd::FuzzFace::Node;

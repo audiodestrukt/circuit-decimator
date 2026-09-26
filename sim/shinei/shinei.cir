@@ -1,0 +1,104 @@
+* Shin-Ei Companion FY-2 "Fuzzmaster" (silicon NPN, 9 V) -- parametric, destroy-able.
+* Source of truth for the circuit; mirrors the tracing in
+* products/phys-fuzz/reference/shin-ei_fy2_fuzzmaster.pdf (S. Castledine, 2002).
+* compare.py rewrites the .param / .options defaults below and the tran/wrdata
+* lines in .control; nothing else.
+*
+*  vp --22k-- c1                      vp --100k||47n-- va2 --47k-- c2
+*   Q1 (b=b1, e=gnd), 2M2 || 1000p from c1 back to b1 (collector-feedback bias)
+*   c1 --47n-- b2,  Q2 (b=b2, e=gnd), 1M2 from c2 back to b2
+*   c1 --2200p-- fuzz wiper;  c2 --3300p-- fuzz lug 1;  fuzz lug 3 = f
+*   f --1000p-- x;  f --10k-- s;  x --15k-- s;  s --100n-- gnd   (the mid scoop)
+*   x -- 50k volume pot -- out
+*
+* The Fuzz pot pans between the stages rather than setting gain: fuzz=1 puts
+* the wiper at the Q2 end (both stages mixed, then 50k to f), fuzz=0 wires
+* Q1's collector straight to f with Q2 behind the whole 50k.
+
+* ---- destroy knobs -------------------------------------------------------
+* supply: battery EMF, internal resistance (dying battery), bulk cap
+.param vcc=9 rbat=1 cbulk=100n
+* guitar pickup: source R, coil L, pickup+cable C (same pickup as fuzzface.cir)
+.param rsrc=6k lpu=2.5 ccab=500p
+* input coupling cap and its leakage
+.param cin=47n rleak_cin=1e12
+* Q1: collector-feedback bias resistor, its parallel cap, collector load
+.param rb1=2.2meg cfb1=1n rc1=22k
+* Q2: interstage cap, bias resistor, collector load, starved supply (100k || 47n)
+.param cc=47n rb2=1.2meg rc2=47k rsup=100k csup=47n
+* fuzz pot (0..1) and the two caps feeding it
+.param fuzz=1 rfuzz=50k cq1=2.2n cq2=3.3n
+* mid scoop: series cap, bridging resistors, shunt cap
+.param ctone=1n rtone1=10k rtone2=15k cmid=100n
+* volume pot (0..1), amp input
+.param vol=0.5 rvol=50k rload=1meg
+* transistors (2SC536F: hFE 160..320): current gain, saturation current, Early
+* voltage, collector-base leakage (cooked junction)
+.param bf1=250 bf2=250 isat=1e-14 vaf=80
+.param rleak1=1e12 rleak2=1e12
+.options temp=27
+
+* ---- audio in (XSPICE file source: "time value" per line) ----------------
+A1 %vd([src 0]) insrc
+.model insrc filesource (file="input.txt" amploffset=[0] amplscale=[1]
++ timeoffset=0 timescale=1 timerelative=false amplstep=false)
+
+* ---- supply --------------------------------------------------------------
+Vbat bat 0 {vcc}
+Rbat bat vp {rbat}
+Cbulk vp 0 {cbulk}
+
+* ---- pickup --------------------------------------------------------------
+Rsrc src p1 {rsrc}
+Lpu p1 gin {lpu}
+Ccab gin 0 {ccab}
+
+* ---- Q1 ------------------------------------------------------------------
+Cin gin b1 {cin}
+Rlkcin gin b1 {rleak_cin}
+Q1 c1 b1 0 QA
+Rb1 c1 b1 {rb1}
+Cfb1 c1 b1 {cfb1}
+Rlk1 c1 b1 {rleak1}
+Rc1 vp c1 {rc1}
+
+* ---- Q2 ------------------------------------------------------------------
+Cc c1 b2 {cc}
+Q2 c2 b2 0 QB
+Rb2 c2 b2 {rb2}
+Rlk2 c2 b2 {rleak2}
+Rsup vp va2 {rsup}
+Csup vp va2 {csup}
+Rc2 va2 c2 {rc2}
+
+* ---- fuzz pot: Q1 into the wiper, Q2 into lug 1, output from lug 3 --------
+Cq1 c1 fw {cq1}
+Cq2 c2 l1 {cq2}
+Rfza f fw {max((1-fuzz)*rfuzz, 1)}
+Rfzb fw l1 {max(fuzz*rfuzz, 1)}
+
+* ---- mid scoop + volume -----------------------------------------------------
+Ctone f x {ctone}
+Rtone1 f s {rtone1}
+Rtone2 x s {rtone2}
+Cmid s 0 {cmid}
+Rvtop x out {max((1-vol)*rvol, 1)}
+Rvbot out 0 {max(vol*rvol, 1)}
+Rload out 0 {rload}
+
+* Gummel-Poon subset, identical to core/circuit/FuzzFace.h (bjt::) and the
+* fuzz deck: IS BF BR VAF ISE NE + XTI/EG temperature scaling.
+.model QA NPN(IS={isat} BF={bf1} VAF={vaf} BR=5 NE=1.5 ISE=5e-14)
+.model QB NPN(IS={isat} BF={bf2} VAF={vaf} BR=5 NE=1.5 ISE=5e-14)
+
+.options interp
+.control
+set wr_singlescale
+set wr_vecnames
+op
+print v(vp) v(b1) v(c1) v(b2) v(va2) v(c2)
+tran 5.2083u 1 0 5.2083u
+wrdata out.dat v(out) v(c1) v(c2) v(vp)
+quit
+.endc
+.end

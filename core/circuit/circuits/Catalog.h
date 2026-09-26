@@ -13,6 +13,7 @@
 #include "LA2A.h"
 #include "MicTransformer.h"
 #include "SEOutput.h"
+#include "ShinEi.h"
 #include "TubePre.h"
 
 #include <cmath>
@@ -377,7 +378,105 @@ private:
     }
 };
 
-inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer", "LA-2A leveler" }; }
+// ---- Shin-Ei FY-2 fuzz --------------------------------------------------------
+// Every component of the FY-2 netlist (ShinEi.h); the pots, transistor gains,
+// leaks and temperature go through the same apply() the plugin uses.
+class ShinEiBench : public BenchCircuit {
+public:
+    ShinEiBench()
+    {
+        ckt.build(p);
+        c = &ckt.c; el = &ckt.el; input = ckt.input; out = ckt.out; supply = ckt.supply;
+        ckt.c.maxIterations = 8;
+        nominalGain = 0.73;   // 150 mV pickup peak -> 110 mV out at the defaults
+        inVolts = inVoltsDefault = kPickupVolts;
+        ioControls(ctl, -17.3, -50, 10);   // 150 mV pk = -17.3 dBu
+        const char* g = "Pots";
+        ctl.push_back(custom("fuzz", "Fuzz (Q1 <-> Q2)", 0, 1, 0, p.fuzz, "", 2, g));
+        ctl.push_back(custom("vol", "Volume", 0, 1, 0, p.vol, "", 2, g));
+        g = "Supply";
+        ctl.push_back({ { "vcc", "Battery", 0.5, 12, 0.5, p.vcc, "V", 2, false }, Target::Supply, "", 1, g });
+        ctl.push_back(element("rbat", "Battery sag", 1, 5000, 200, p.rbat, "Ohm", 1, 0, g));
+        ctl.push_back(element("cbulk", "Supply cap", 0.01, 470, 1, p.cbulk * 1e6, "uF", 1e-6, 2, g));
+        g = "Q1 stage";
+        ctl.push_back(element("cin", "Input cap", 1, 470, 47, p.cin * 1e9, "nF", 1e-9, 0, g));
+        ctl.push_back(custom("rleakcin", "Input cap leak", 0, 1, 0, 0, "", 2, g));
+        ctl.push_back(element("rb1", "Bias R (c-b)", 0.1, 10, 2.2, p.rb1 * 1e-6, "MOhm", 1e6, 2, g));
+        ctl.push_back(element("cfb1", "Feedback C (c-b)", 10, 10000, 1000, p.cfb1 * 1e12, "pF", 1e-12, 0, g));
+        ctl.push_back(element("rc1", "Collector R", 1, 220, 22, p.rc1 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(custom("bf1", "Q1 hFE", 5, 600, 100, p.bf1, "", 0, g));
+        ctl.push_back(custom("leak1", "Q1 junction leak", 0, 1, 0, 0, "", 2, g));
+        g = "Q2 stage";
+        ctl.push_back(element("cc", "Coupling cap", 1, 470, 47, p.cc * 1e9, "nF", 1e-9, 0, g));
+        ctl.push_back(element("rb2", "Bias R (c-b)", 0.1, 10, 1.2, p.rb2 * 1e-6, "MOhm", 1e6, 2, g));
+        ctl.push_back(element("rc2", "Collector R", 1, 470, 47, p.rc2 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("rsup", "Supply R", 1, 1000, 100, p.rsup * 1e-3, "kOhm", 1e3, 0, g));
+        ctl.push_back(element("csup", "Supply bypass", 1, 1000, 47, p.csup * 1e9, "nF", 1e-9, 0, g));
+        ctl.push_back(custom("bf2", "Q2 hFE", 5, 600, 100, p.bf2, "", 0, g));
+        ctl.push_back(custom("leak2", "Q2 junction leak", 0, 1, 0, 0, "", 2, g));
+        g = "Fuzz pot";
+        ctl.push_back(element("cq1", "Q1 -> wiper", 100, 100000, 2200, p.cq1 * 1e12, "pF", 1e-12, 0, g));
+        ctl.push_back(element("cq2", "Q2 -> lug 1", 100, 100000, 3300, p.cq2 * 1e12, "pF", 1e-12, 0, g));
+        ctl.push_back(custom("rfuzz", "Pot", 1, 500, 50, p.rfuzz * 1e-3, "kOhm", 0, g));
+        g = "Mid scoop";
+        ctl.push_back(element("ctone", "Series C", 100, 100000, 1000, p.ctone * 1e12, "pF", 1e-12, 0, g));
+        ctl.push_back(element("rtone1", "Bridge R (in)", 0.1, 100, 10, p.rtone1 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("rtone2", "Bridge R (out)", 0.1, 100, 15, p.rtone2 * 1e-3, "kOhm", 1e3, 1, g));
+        ctl.push_back(element("cmid", "Shunt C", 1, 10000, 100, p.cmid * 1e9, "nF", 1e-9, 0, g));
+        g = "Output";
+        ctl.push_back(custom("rvol", "Volume pot", 1, 500, 50, p.rvol * 1e-3, "kOhm", 0, g));
+        ctl.push_back(element("rload", "Amp input", 10, 10000, 1000, p.rload * 1e-3, "kOhm", 1e3, 0, g));
+        ctl.push_back(custom("temp", "Temperature", -40, 120, -40, p.tempC, "C", 0, "Transistors"));
+        using S = ShinEi;
+        prb = { { "Q1 base", ckt.nodes[S::B1] }, { "Q1 collector", ckt.nodes[S::C1] }, { "Q2 base", ckt.nodes[S::B2] },
+                { "Q2 supply", ckt.nodes[S::VA2] }, { "Q2 collector", ckt.nodes[S::C2] }, { "fuzz wiper", ckt.nodes[S::FW] },
+                { "scoop in", ckt.nodes[S::F] }, { "scoop out", ckt.nodes[S::X] }, { "output", ckt.nodes[S::OUT] } };
+    }
+
+protected:
+    void applyOne(const Control& q, double raw) override
+    {
+        if (q.target != Target::Custom) { BenchCircuit::applyOne(q, raw); return; }
+        const std::string key = q.key;
+        if (key == "fuzz") p.fuzz = raw;
+        else if (key == "vol") p.vol = raw;
+        else if (key == "rfuzz") p.rfuzz = raw * 1e3;
+        else if (key == "rvol") p.rvol = raw * 1e3;
+        else if (key == "bf1") p.bf1 = raw;
+        else if (key == "bf2") p.bf2 = raw;
+        else if (key == "temp") p.tempC = raw;
+        else if (key == "leak1") p.rleak1 = leakToOhms(raw, 1e9, 3e5);
+        else if (key == "leak2") p.rleak2 = leakToOhms(raw, 1e9, 3e5);
+        else if (key == "rleakcin") p.rleakCin = leakToOhms(raw, 5e6, 1e4);
+    }
+    void rebuild() override
+    {
+        // pots, models and leaks through the netlist's own apply (element knobs
+        // were already set deferred by the base class; apply() rebuilds once)
+        ckt.c.setValueDeferred(ckt.el["rfza"], ShinEi::pot(1 - p.fuzz, p.rfuzz));
+        ckt.c.setValueDeferred(ckt.el["rfzb"], ShinEi::pot(p.fuzz, p.rfuzz));
+        ckt.c.setValueDeferred(ckt.el["rvtop"], ShinEi::pot(1 - p.vol, p.rvol));
+        ckt.c.setValueDeferred(ckt.el["rvbot"], ShinEi::pot(p.vol, p.rvol));
+        ckt.c.setValueDeferred(ckt.el["rleak1"], p.rleak1);
+        ckt.c.setValueDeferred(ckt.el["rleak2"], p.rleak2);
+        ckt.c.setValueDeferred(ckt.el["rleakcin"], p.rleakCin);
+        ckt.q1->m = bjt::model(p.isat, p.bf1, p.vaf, p.tempC);
+        ckt.q2->m = bjt::model(p.isat, p.bf2, p.vaf, p.tempC);
+        ckt.c.rebuildIfDirty();
+    }
+
+private:
+    ShinEiParams p;
+    ShinEi ckt;
+
+    static Control custom(const char* key, const char* name, double lo, double hi, double centre, double def,
+                          const char* unit, int dec, const char* g)
+    {
+        return { { key, name, lo, hi, centre, def, unit, dec, false }, Target::Custom, key, 1, g };
+    }
+};
+
+inline std::vector<std::string> names() { return { "Tube mic pre", "Single-ended output (Iron)", "Mic transformer", "LA-2A leveler", "Tokyo '68 fuzz (FY-2)" }; }
 
 inline std::unique_ptr<BenchCircuit> make(int index)
 {
@@ -386,6 +485,7 @@ inline std::unique_ptr<BenchCircuit> make(int index)
     case 1: return std::make_unique<SEOutputBench>();
     case 2: return std::make_unique<MicTransformerBench>();
     case 3: return std::make_unique<LA2ABench>();
+    case 4: return std::make_unique<ShinEiBench>();
     default: return nullptr;
     }
 }

@@ -242,7 +242,7 @@ private:
     std::vector<int> auxOfSource;
 
     std::vector<double> D, Ev, K, Rm, geq, sgn;
-    std::vector<double> vr, ir, vj, vj1, w, p, v, cur, z, J, Jg, F, dv, vPrev, A, Bm;
+    std::vector<double> vr, ir, vj, vj1, w, p, v, cur, z, J, Jg, F, dv, vPrev, A, Bm, xs;
     std::vector<int> blk0, blkN;   // per port: first port and size of its device's block in Jg
 
     static size_t idx(int r, int c, int cols) { return (size_t) r * (size_t) cols + (size_t) c; }
@@ -294,6 +294,7 @@ private:
         vPrev.assign((size_t) NI, 0.0);
         A.assign((size_t) NX * (size_t) NX, 0);
         Bm.assign((size_t) NX * (size_t) NZ, 0);
+        xs.assign((size_t) NX, 0.0);
     }
 
     // Assemble A (and the B columns) for transient (dc = false) or the DC
@@ -538,7 +539,6 @@ private:
         for (int k = 0; k < NS; ++k) w[(size_t) k] = 0;
         for (int k = 0; k < NW; ++k) z[(size_t) k] = w[(size_t) k];
         for (int k = 0; k < NI; ++k) z[(size_t) (NW + k)] = cur[(size_t) k];
-        std::vector<double> xs((size_t) NX);
         for (int n = 0; n < NX; ++n) {
             double acc = 0;
             for (int c = 0; c < NZ; ++c) acc += D[idx(n, c, NZ)] * z[(size_t) c];

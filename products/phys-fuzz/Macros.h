@@ -1,6 +1,8 @@
 // Phys Fuzz -- the focused fuzz. A few player-facing knobs, each mapped onto
-// the workbench's full component surface (core/circuit/Knobs.h). Plain C++ so
-// the search tools can use the same mapping (tools/ff_capi.cpp).
+// the workbench's full component surface (core/circuit/Knobs.h), which drives
+// whichever circuit the "circuit" parameter selects (Fuzz Face via
+// knobsToCircuit, Shin-Ei FY-2 via knobsToShinEi). Plain C++ so the search
+// tools can use the same mapping (tools/ff_capi.cpp).
 //
 // The curves are a first pass: tune them by ear in Circuit Bench / the plugin,
 // and use the search map to see where they travel.
