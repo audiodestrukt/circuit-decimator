@@ -37,3 +37,15 @@ target_link_libraries(CircuitBench
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
+
+if(CD_BUILD_TOOLS)
+    # Render the speaker cross-section view for given cab parameters (design review).
+    juce_add_console_app(speaker_snapshot PRODUCT_NAME "speaker_snapshot")
+    target_sources(speaker_snapshot PRIVATE tools/speaker_snapshot.cpp)
+    target_compile_definitions(speaker_snapshot PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(speaker_snapshot
+        PRIVATE cd_core
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
+endif()

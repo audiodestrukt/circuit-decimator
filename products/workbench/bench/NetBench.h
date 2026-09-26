@@ -52,6 +52,9 @@ public:
     std::vector<std::string> uiProbes;
     bool uiHasCore = false;
     bool uiHasGainReduction = false;
+    bool uiHasSpeaker = false;
+    // the circuit last selected (UI thread only; it's freed only on the UI thread, after a newer one replaces it)
+    const cd::acoustic::Cab* uiCab() const { return uiCircuit ? uiCircuit->cabModel() : nullptr; }
 
     // UI thread: build circuit `index`, load its default values, hand it over
     void select(int index)
@@ -63,6 +66,8 @@ public:
         for (auto& pr : c->probes()) uiProbes.emplace_back(pr.label);
         uiHasCore = c->core() != nullptr;
         uiHasGainReduction = std::isfinite(c->gainReductionDb());
+        uiHasSpeaker = c->cabModel() != nullptr;
+        uiCircuit = c.get();
         const auto& ctl = c->controls();
         std::vector<double> v(ctl.size());
         for (size_t k = 0; k < ctl.size() && k < (size_t) kMaxControls; ++k) {
@@ -148,6 +153,7 @@ public:
 
 private:
     cd::catalog::BenchCircuit* current = nullptr;
+    cd::catalog::BenchCircuit* uiCircuit = nullptr;
     std::atomic<cd::catalog::BenchCircuit*> pending { nullptr }, retired { nullptr };
     std::atomic<bool> warmRequested { false };
     std::array<double, kMaxControls> snapshot {};

@@ -21,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace cd::acoustic {
@@ -90,6 +91,16 @@ inline Mic micOf(const CabParams& p)
     return m;
 }
 
+// What a view shows (Bench / product UI): the response at the mic and the cone's
+// deflection shapes, filled by the worker after each rebuild.
+struct CabDisplay {
+    std::vector<double> freq, spl;               // response at the mic: dB SPL for 2.83 V at the amp
+    std::vector<double> nodeR, nodeZ;            // the cone's shell-model nodes (m)
+    std::vector<double> shapeFreq;               // frequencies the shapes are given at
+    std::vector<std::vector<std::complex<double>>> shape;   // per freq: T at each node, then the dust cap
+    CabParams params {};                         // what it was built from
+};
+
 // ---- the IR, stage-cached -----------------------------------------------------------
 class CabIRBuilder {
 public:
@@ -122,6 +133,8 @@ public:
         }
         const auto vc = velocityCorrection(driverOf(p), boxOf(p), kRAmp, ct, mat, cone.radius, fsB, nB);
         const auto r = combine(rings, &ct, &vc);
+        lastSpectrum = r.spectrum;
+        lastFsB = fsB;
         lastP = p;
         lastFs = fsB;
         lastN = nB;
@@ -136,10 +149,51 @@ public:
         return ir;
     }
 
+    // the display data for the last build()
+    void display(const CabParams& p, CabDisplay& d) const
+    {
+        d.params = p;
+        const size_t nb = lastSpectrum.size();
+        if (nb < 2) return;
+        const size_t nB = (nb - 1) * 2;
+        const auto cdrv = coupledDriver(driverOf(p), boxOf(p), kRAmp, ct, materialOf(p), p[kConeRadius], lastFsB, nB);
+        d.freq.clear();
+        d.spl.clear();
+        for (double f = 40; f <= std::min(16000.0, 0.45 * lastFsB); f *= 1.02) {
+            const double bin = f * (double) nB / lastFsB;
+            const size_t k = std::min(nb - 2, (size_t) bin);
+            const double t = bin - (double) k;
+            auto at = [&](size_t i) {   // circuit velocity per volt x the (coupled) mic transfer
+                const auto uv = p[kBl] / (cdrv.ze[i] * cdrv.zm[i] + cdrv.bl2);
+                return std::abs(uv * lastSpectrum[i]);
+            };
+            const double m = (1 - t) * at(std::max<size_t>(1, k)) + t * at(k + 1);
+            d.freq.push_back(f);
+            d.spl.push_back(20 * std::log10(std::max(1e-12, 2.83 * m / 20e-6)));
+        }
+        d.nodeR.clear();
+        d.nodeZ.clear();
+        for (int k = 0; k < model.numNodes(); ++k) {
+            d.nodeR.push_back(model.nodeRadius(k));
+            d.nodeZ.push_back(model.nodeZ(k));
+        }
+        d.shapeFreq.clear();
+        d.shape.clear();
+        std::vector<cplx> T;
+        for (double f = 50; f <= 10000; f *= 1.06) {
+            model.solve(2 * M_PI * f, T);
+            T.push_back(model.dustCapResponse());
+            d.shapeFreq.push_back(f);
+            d.shape.push_back(T);
+        }
+    }
+
 private:
     MicRings rings;
     ConeTransfer ct;
     ConeModel model;
+    std::vector<std::complex<double>> lastSpectrum;
+    double lastFsB = 48000;
     CabParams lastP {};
     double lastFs = 0;
     size_t lastN = 0;
@@ -183,6 +237,7 @@ public:
         for (auto* h : held) delete h;
         conv.setIR(IRSpectra::make(builder.build(params, fs, n), block).release());
         builtGen = requestedGen.load();
+        publishDisplay(params);
         running = true;
         worker = std::thread([this] { run(); });
     }
@@ -198,6 +253,20 @@ public:
         requestedGen.fetch_add(1, std::memory_order_release);
     }
     double get(int index) const { return params[(size_t) index]; }
+
+    // ---- for views (UI thread): parameters as last set, and the display data
+    CabParams paramsSnapshot() const
+    {
+        CabParams p;
+        for (int i = 0; i < kNumCabParams; ++i) p[(size_t) i] = shared[(size_t) i].load(std::memory_order_relaxed);
+        return p;
+    }
+    unsigned displayVersion() const { return dispVersion.load(std::memory_order_acquire); }
+    CabDisplay display() const
+    {
+        std::lock_guard<std::mutex> l(dispMutex);
+        return disp;
+    }
 
     // the driver+box circuit tracks its knobs at once; the IR follows from the worker
     void applyCircuit()
@@ -263,6 +332,20 @@ private:
     IRSpectra* parked = nullptr;
     std::thread worker;
     std::atomic<bool> running { false };
+    mutable std::mutex dispMutex;   // UI thread and worker only
+    CabDisplay disp;
+    std::atomic<unsigned> dispVersion { 0 };
+
+    void publishDisplay(const CabParams& p)
+    {
+        CabDisplay d;
+        builder.display(p, d);
+        {
+            std::lock_guard<std::mutex> l(dispMutex);
+            disp = std::move(d);
+        }
+        dispVersion.fetch_add(1, std::memory_order_release);
+    }
 
     void run()
     {
@@ -277,6 +360,7 @@ private:
                 lastBuildMs = (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 delete pending.exchange(s.release(), std::memory_order_acq_rel);   // an unclaimed older one goes
                 builtGen = g;
+                publishDisplay(p);
                 ++rebuilds;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

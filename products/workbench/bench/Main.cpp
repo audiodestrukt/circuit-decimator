@@ -17,6 +17,7 @@
 
 #include "NetControls.h"
 #include "ui/GainReductionView.h"
+#include "ui/SpeakerView.h"
 #include "PluginProcessor.h"
 #include "ui/CircuitView.h"
 
@@ -103,6 +104,7 @@ public:
         addChildComponent(meter);
         addChildComponent(loopView);
         addChildComponent(grView);
+        addChildComponent(speakerView);
         controlsViewport.setViewedComponent(&netControls, false);
         controlsViewport.setScrollBarsShown(true, false);
         addChildComponent(controlsViewport);
@@ -210,9 +212,14 @@ public:
         scope.setBounds(r.removeFromBottom(140));
         r.removeFromBottom(8);
         circuitView.setBounds(r);
+        if (net.uiHasSpeaker) {   // node meter as a strip, the cross-section below
+            meter.setBounds(r.removeFromTop(96));
+            r.removeFromTop(8);
+            speakerView.setBounds(r);
+        }
         const int panes = 1 + (net.uiHasCore ? 1 : 0) + (net.uiHasGainReduction ? 1 : 0);
         const int w = (r.getWidth() - 8 * (panes - 1)) / panes;
-        meter.setBounds(r.removeFromLeft(w));
+        if (!net.uiHasSpeaker) meter.setBounds(r.removeFromLeft(w));
         if (net.uiHasGainReduction) {
             r.removeFromLeft(8);
             grView.setBounds(r.removeFromLeft(w));
@@ -371,6 +378,7 @@ private:
         meter.setVisible(!fuzz);
         loopView.setVisible(!fuzz && net.uiHasCore);
         grView.setVisible(!fuzz && net.uiHasGainReduction);
+        speakerView.setVisible(!fuzz && net.uiHasSpeaker);
         grView.clear();
         controlsViewport.setVisible(!fuzz);
         resized();
@@ -442,6 +450,7 @@ private:
     cd::ui::NodeMeterView meter { net.probes };
     cd::ui::BHLoopView loopView { net.trace };
     cd::ui::GainReductionView grView { net.gainReduction };
+    cd::ui::SpeakerView speakerView { [this] { return net.uiCab(); } };
     NetControls netControls { net };
     juce::Viewport controlsViewport;
     std::unique_ptr<juce::AudioProcessorEditor> editor;

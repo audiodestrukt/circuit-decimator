@@ -58,6 +58,8 @@ public:
     virtual double probeVoltage(size_t k) const { return c->x(prb[k].node); }
     // gain reduction in dB for circuits that have it (compressors), else NaN
     virtual double gainReductionDb() const { return NAN; }
+    // the speaker cab model, for circuits that are one (views read it on the UI thread)
+    virtual const acoustic::Cab* cabModel() const { return nullptr; }
 
     void apply(const double* v)
     {
@@ -546,6 +548,7 @@ public:
         c = &cab.circuit();
     }
     void warmStart() override { cab.circuit().warmStart(); }
+    const acoustic::Cab* cabModel() const override { return &cab; }
     double process(double x) override { return cab.process(x * inVolts) / (nominalGain * inVoltsDefault) * outGain; }
 
 protected:
