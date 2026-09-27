@@ -108,6 +108,28 @@ inline double closedBoxQtc(const DriverParams& d, const BoxParams& b)
 }
 
 struct SpeakerBox {
+    // Every element value and ratio from the driver and box: build() and live
+    // changes both go through here, so the circuit can't drift from its parameters.
+    // Deferred: call c.rebuildIfDirty() after (build() leaves it to prepare()).
+    void retune(const DriverParams& d, const BoxParams& b)
+    {
+        c.setValueDeferred(el["re"], d.re);
+        c.setValueDeferred(el["le"], d.le);
+        c.setValueDeferred(el["l2"], d.l2);
+        c.setValueDeferred(el["r2"], d.r2);
+        c.setValueDeferred(el["mms"], d.mms);
+        c.setValueDeferred(el["cms"], d.cms);
+        c.setValueDeferred(el["rms"], 1 / d.rms);
+        const double cab = b.vb / (kRho * kC * kC);
+        const double wc = 2 * M_PI * closedBoxFc(d, b);
+        c.setValueDeferred(el["cab"], cab);
+        c.setValueDeferred(el["rab"], wc * cab * b.qa);   // 1 / R_ab, R_ab = 1 / (wc Cab Qa)
+        c.setValueDeferred(el["mp"], openingMass(b));      // the back opening's air plug
+        c.setValueDeferred(el["rp"], 1 / openingResistance(b));
+        c.setRatioDeferred(0, 1 / d.bl);                   // motor
+        c.setRatioDeferred(1, d.sd);                       // cone area
+    }
+
     net::Circuit c;
     int input = -1;              // amp voltage
     int velocity = -1;           // output: cone velocity (m/s)
@@ -120,22 +142,22 @@ struct SpeakerBox {
         auto n = [&](const char* s) { return c.node(s); };
         const int amp = n("amp"), vc = n("vc"), le = n("le"), coil = n("coil"), u = n("u"), q = n("q");
         input = c.source(amp, net::GND, rAmp);
-        el["re"] = c.resistor(amp, vc, d.re);
-        el["le"] = c.inductor(vc, le, d.le);
-        el["l2"] = c.inductor(le, coil, d.l2);
-        el["r2"] = c.resistor(le, coil, d.r2);
-        c.idealTransformer(coil, net::GND, u, net::GND, 1 / d.bl);    // motor (gyrator in mobility form)
-        el["mms"] = c.capacitor(u, net::GND, d.mms);
-        el["cms"] = c.inductor(u, net::GND, d.cms);
-        el["rms"] = c.resistor(u, net::GND, 1 / d.rms);
-        c.idealTransformer(u, net::GND, q, net::GND, d.sd);          // cone area
-        const double cab = b.vb / (kRho * kC * kC);
-        const double wc = 2 * M_PI * closedBoxFc(d, b);
+        // topology here, values from retune()
+        el["re"] = c.resistor(amp, vc, 1);
+        el["le"] = c.inductor(vc, le, 1);
+        el["l2"] = c.inductor(le, coil, 1);
+        el["r2"] = c.resistor(le, coil, 1);
+        c.idealTransformer(coil, net::GND, u, net::GND, 1);          // motor (gyrator in mobility form): 1/Bl
+        el["mms"] = c.capacitor(u, net::GND, 1);
+        el["cms"] = c.inductor(u, net::GND, 1);
+        el["rms"] = c.resistor(u, net::GND, 1);
+        c.idealTransformer(u, net::GND, q, net::GND, 1);             // cone area: Sd
         const int mb = n("mb");
-        el["cab"] = c.inductor(q, mb, cab);
-        el["rab"] = c.resistor(q, mb, wc * cab * b.qa);              // 1 / R_ab, R_ab = 1 / (wc Cab Qa)
-        el["mp"] = c.capacitor(mb, net::GND, openingMass(b));         // the back opening's air plug
-        el["rp"] = c.resistor(mb, net::GND, 1 / openingResistance(b));
+        el["cab"] = c.inductor(q, mb, 1);                             // box air
+        el["rab"] = c.resistor(q, mb, 1);                             // box absorption
+        el["mp"] = c.capacitor(mb, net::GND, 1);                      // the back opening's air plug
+        el["rp"] = c.resistor(mb, net::GND, 1);                       // its radiation resistance
+        retune(d, b);
         velocity = c.output(u);
         current = c.output(amp, vc, 1 / d.re);
     }

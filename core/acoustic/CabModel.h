@@ -160,6 +160,7 @@ public:
         const auto vc = velocityCorrection(cdrv);
         RadiationIR r;
         r.spectrum = combine(rings, &ct, nullptr).spectrum;   // the front, per unit coil velocity
+        applyBaffleEdges(r.spectrum, p, fsB, nB);              // the finite front baffle
         addRearWave(r.spectrum, p, cdrv, fsB, nB, fmax);        // an open back's rear wave
         for (size_t b = 0; b < r.spectrum.size(); ++b) r.spectrum[b] *= vc[b];
         lastSpectrum = r.spectrum;
@@ -178,11 +179,48 @@ public:
         return ir;
     }
 
+    // The front baffle is finite (kBaffle square, the speaker centred): its edges
+    // diffract. Each point on the edge re-radiates the wave arriving there,
+    // inverted and at half strength (the usual edge-source model of baffle-step
+    // tools), with its own path and spreading to the mic:
+    //   F(w) = 1 - 1/2 mean_i [ R_sm / (R_si + R_im) ] e^{-jk (R_si + R_im - R_sm)}
+    // (source at the cone's centre, s; edge point i; mic m). At low frequency that
+    // halves the pressure (the baffle step: half space -> whole space); at high
+    // frequency the edge terms arrive spread in time and average out to a ripple;
+    // close to the cone the edges are far off relative to it and it fades away.
+    void applyBaffleEdges(std::vector<std::complex<double>>& spec, const CabParams& p, double fsB, size_t nB) const
+    {
+        const double b = p[kBaffle];
+        if (b <= 0) return;
+        const double mx = p[kMicOffset], mz = p[kMicDistance];
+        const double sz = coneHeight(coneOf(p), 0.0) * 0.5;   // an acoustic centre between the dust cap and the rim
+        const double Rsm = std::hypot(mx, mz - sz);
+        constexpr int per = 32;                                 // points per side
+        double wsum = 0;
+        std::vector<std::pair<double, double>> edges;           // (extra path, weight)
+        for (int side = 0; side < 4; ++side)
+            for (int i = 0; i < per; ++i) {
+                const double t = -b / 2 + b * (i + 0.5) / per;
+                const double ex = side == 0 ? b / 2 : side == 1 ? -b / 2 : t;
+                const double ey = side < 2 ? t : (side == 2 ? b / 2 : -b / 2);
+                const double Rsi = std::sqrt(ex * ex + ey * ey + sz * sz);
+                const double Rim = std::sqrt((ex - mx) * (ex - mx) + ey * ey + mz * mz);
+                edges.push_back({ Rsi + Rim - Rsm, Rsm / (Rsi + Rim) });
+                wsum += 1;
+            }
+        for (size_t k = 1; k < spec.size(); ++k) {
+            const double kw = 2 * M_PI * fsB * (double) k / (double) nB / kC;
+            std::complex<double> e = 0;
+            for (const auto& [dl, wgt] : edges) e += wgt * std::polar(1.0, -kw * dl);
+            spec[k] *= 1.0 - 0.5 * e / wsum;
+        }
+    }
+
     // An open back: the air the cone's rear pushes out of the opening reaches the mic
     // round the cabinet -- across the back to its edge, along the side, then from the
     // front edge to the mic -- inverted and delayed. The opening is a small monopole;
-    // the mic picks it up by its pattern for the direction it arrives from (the front
-    // edge). Diffraction round the box: full strength while the box is small against
+    // the mic picks it up through the same mic as the front (its pattern for the
+    // direction it arrives from, the front edge, and its own response). Diffraction round the box: full strength while the box is small against
     // the wavelength, falling as 1/f above that (an approximation for the IR tuning
     // loop to refine). The finite front baffle's own edge (baffle step) isn't modelled.
     void addRearWave(std::vector<std::complex<double>>& spec, const CabParams& p, const CoupledDriver& cdrv,
@@ -198,7 +236,6 @@ public:
         const double L = legBack + legSide + r3;
         const double ax = -std::cos(ang), ar = -std::sin(ang) * (p[kMicOffset] < 0 ? -1.0 : 1.0);
         const double cosPsi = (ax * dz + ar * dr) / r3;
-        const double alpha = std::clamp(p[kMicPattern], 0.0, 1.0);
         const double dring = 2 * rings.radius[0];                   // rings are uniform in radius
         const double t0 = std::min(0.42 * fsB, fmax), t1 = std::min(0.5 * fsB, std::max(0.42 * fsB + 1, fmax * 1.05));
         for (size_t k = 1; k < spec.size(); ++k) {
@@ -207,7 +244,10 @@ public:
             std::complex<double> ucone = 0;                         // the cone's rear volume velocity per coil velocity
             for (size_t j = 0; j < rings.radius.size(); ++j) ucone += ct.T[j][k] * (2 * M_PI * rings.radius[j] * dring);
             const auto uout = -ucone * cdrv.rearFraction[k];
-            const std::complex<double> g = alpha + (1 - alpha) * cosPsi * (1.0 + 1.0 / std::complex<double>(0, kw * r3));
+            // through the same mic as the front: its pattern and its own (minimum-phase) response
+            const double alpha = rings.alpha[k];
+            const std::complex<double> g = (alpha + (1 - alpha) * cosPsi * (1.0 + 1.0 / std::complex<double>(0, kw * r3)))
+                                           * rings.response[k];
             const double diffraction = 1 / (1 + kw * b / M_PI);
             const double taper = f <= t0 ? 1.0 : 0.5 * (1 + std::cos(M_PI * std::min(1.0, (f - t0) / std::max(1.0, t1 - t0))));
             spec[k] += std::complex<double>(0, w) * kRho / (4 * M_PI * L) * std::polar(1.0, -kw * L) * diffraction * g * uout * taper;
@@ -340,23 +380,8 @@ public:
     {
         if (!circuitDirty) return;
         circuitDirty = false;
-        const auto d = driverOf(params);
-        const auto b = boxOf(params);
+        speaker.retune(driverOf(params), boxOf(params));
         auto& c = speaker.c;
-        auto& el = speaker.el;
-        c.setValueDeferred(el["re"], d.re);
-        c.setValueDeferred(el["le"], d.le);
-        c.setValueDeferred(el["l2"], d.l2);
-        c.setValueDeferred(el["r2"], d.r2);
-        c.setValueDeferred(el["mms"], d.mms);
-        c.setValueDeferred(el["cms"], d.cms);
-        c.setValueDeferred(el["rms"], 1 / d.rms);
-        const double cab = b.vb / (kRho * kC * kC);
-        const double wc = 2 * M_PI * closedBoxFc(d, b);
-        c.setValueDeferred(el["cab"], cab);
-        c.setValueDeferred(el["rab"], wc * cab * b.qa);
-        c.setRatioDeferred(0, 1 / d.bl);
-        c.setRatioDeferred(1, d.sd);
         c.rebuildIfDirty();
     }
 

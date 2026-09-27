@@ -213,6 +213,9 @@ struct MicRings {
     std::vector<double> radius;
     std::vector<std::vector<std::complex<double>>> H;
     double delay = 0;   // shortest time of flight (s)
+    // the mic's own per-bin terms, for other sources reaching it (an open back's rear wave)
+    std::vector<double> alpha;                      // pressure/gradient mix
+    std::vector<std::complex<double>> response;     // its on-axis response (minimum phase; 1 for the ideal mic)
 };
 
 inline MicRings rings(const Cone& cone, const Mic& mic, double fs, size_t n, double maxFreq = 20000)
@@ -256,6 +259,8 @@ inline MicRings rings(const Cone& cone, const Mic& mic, double fs, size_t n, dou
         taper[k] = f <= lo ? 1.0 : 0.5 * (1 + std::cos(M_PI * std::min(1.0, (f - lo) / std::max(1.0, t1 - lo))));
     }
     const auto resp = mic.model == 1 ? minimumPhase(respMag, n) : std::vector<std::complex<double>>(n / 2 + 1, 1.0);
+    out.alpha = alpha;
+    out.response = resp;
     for (const auto& ring : surf) {
         std::fill(A0.begin(), A0.end(), 0.0);
         std::fill(A1.begin(), A1.end(), 0.0);
