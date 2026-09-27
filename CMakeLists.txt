@@ -73,6 +73,29 @@ if(CD_BUILD_TOOLS)
     target_link_libraries(cab_check PRIVATE cd_circuit)
     target_compile_options(cab_check PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
 
+    # CPU cost of the realtime workloads (tests/perf_check.py, ctest).
+    add_executable(perf_bench tools/perf_bench.cpp)
+    target_link_libraries(perf_bench PRIVATE cd_circuit)
+    target_compile_options(perf_bench PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>)
+
+    # ---- integration tests (ctest): accuracy + CPU regressions
+    #   ctest --test-dir build --output-on-failure
+    # perf: tests/perf_check.py against tests/perf_baseline.json for this machine
+    # (CD_PERF_MACHINE, default the hostname); CI passes its own machine name.
+    enable_testing()
+    set(CD_PERF_MACHINE "" CACHE STRING "Machine name for the CPU baseline (empty: the hostname)")
+    find_package(Python3 COMPONENTS Interpreter)
+    add_test(NAME cab_accuracy COMMAND cab_check)
+    if(Python3_FOUND)
+        set(_perf_args --bench $<TARGET_FILE:perf_bench> --json ${CMAKE_BINARY_DIR}/perf_results.json)
+        if(CD_PERF_MACHINE)
+            list(APPEND _perf_args --machine ${CD_PERF_MACHINE})
+        endif()
+        add_test(NAME cpu_regression COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/perf_check.py ${_perf_args})
+        # timing is meaningless with other tests competing for the CPU
+        set_tests_properties(cpu_regression PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
     # Any netlist circuit in core/circuit/circuits by name (seout, ...).
     add_executable(circuit_render tools/circuit_render.cpp)
     target_link_libraries(circuit_render PRIVATE cd_circuit)
@@ -124,6 +147,7 @@ add_subdirectory(products/workbench)
 add_subdirectory(products/phys-fuzz)
 add_subdirectory(products/iron)
 add_subdirectory(products/opto)
+add_subdirectory(products/cone)
 
 # ---- headless VST3 host: renders a WAV through any built plugin (with automation)
 if(CD_BUILD_TOOLS)

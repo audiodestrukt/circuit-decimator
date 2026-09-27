@@ -61,6 +61,7 @@ int main(int argc, char** argv)
         c2.release();
     }
     std::printf("worst %.4f dB\n", worst);
+    const bool accurate = worst < 1.0;   // the realtime path must stay within 1 dB of the chain it's built from
 
     // cost of the realtime path
     const long N = (long) fs;
@@ -90,4 +91,6 @@ int main(int argc, char** argv)
     cab.applyCircuit();
     std::printf("rebuild after a driver change: %.0f ms\n", wait(r0));
     cab.release();
+    if (!accurate) std::printf("FAILED: realtime cab differs from its reference by %.2f dB (limit 1 dB)\n", worst);
+    return accurate ? 0 : 1;
 }

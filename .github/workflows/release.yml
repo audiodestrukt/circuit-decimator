@@ -1,6 +1,6 @@
 name: Product builds
 
-# Builds one product (Phys Fuzz, Iron or Opto) for macOS (VST3 + AU, universal),
+# Builds one product (Phys Fuzz, Iron, Opto or Cone) for macOS (VST3 + AU, universal),
 # Windows (VST3) and Linux (VST3), validates each with pluginval (and auval on
 # macOS), and packages one zip per platform. This repo is private, so macOS
 # runner minutes bill at 10x: it only runs on a release tag or by hand.
@@ -8,6 +8,7 @@ name: Product builds
 #   git tag phys-fuzz-v0.1.0 && git push origin phys-fuzz-v0.1.0   ->  draft release: Phys Fuzz
 #   git tag iron-v0.1.0 && git push origin iron-v0.1.0             ->  draft release: Iron
 #   git tag opto-v0.1.0 && git push origin opto-v0.1.0             ->  draft release: Opto
+#   git tag cone-v0.1.0 && git push origin cone-v0.1.0             ->  draft release: Cone
 #   Actions -> Product builds -> Run workflow                       ->  zips as workflow artifacts
 #
 # macOS signing + notarization run only when the secrets exist (see the
@@ -19,13 +20,14 @@ on:
       - 'phys-fuzz-v*'
       - 'iron-v*'
       - 'opto-v*'
+      - 'cone-v*'
   workflow_dispatch:
     inputs:
       product:
         description: 'Which product to build'
         type: choice
         default: phys-fuzz
-        options: [phys-fuzz, iron, opto]
+        options: [phys-fuzz, iron, opto, cone]
       platforms:
         description: 'Which platforms to build (tags always build all; macOS minutes cost 10x here)'
         type: choice
@@ -61,6 +63,7 @@ jobs:
             phys-fuzz) PRODUCT="Phys Fuzz"; TARGET=PhysFuzz; AUVAL="aufx Phfz Adst" ;;
             iron)      PRODUCT="Iron";      TARGET=Iron;     AUVAL="aufx Iron Adst" ;;
             opto)      PRODUCT="Opto";      TARGET=Opto;     AUVAL="aufx Opto Adst" ;;
+            cone)      PRODUCT="Cone";      TARGET=Cone;     AUVAL="aufx Cone Adst" ;;
             *) echo "::error::unknown product $SLUG"; exit 1 ;;
           esac
           { echo "slug=$SLUG"; echo "product=$PRODUCT"; echo "target=$TARGET"; echo "version=$VERSION"; echo "auval=$AUVAL"; } >> "$GITHUB_OUTPUT"

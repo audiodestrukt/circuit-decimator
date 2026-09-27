@@ -1,0 +1,36 @@
+{
+ "i9-workstation": {
+  "cab_realtime_192k": {
+   "iterations": -1.0,
+   "normalized": 0.002436778
+  },
+  "cab_rebuild_cone": {
+   "iterations": -1.0,
+   "normalized": 200.7688
+  },
+  "cab_rebuild_driver": {
+   "iterations": -1.0,
+   "normalized": 23.45146
+  },
+  "cab_rebuild_mic": {
+   "iterations": -1.0,
+   "normalized": 945.8578
+  },
+  "fuzz_london_192k": {
+   "iterations": 1.2315,
+   "normalized": 0.001326339
+  },
+  "fuzz_tokyo_192k": {
+   "iterations": 1.0652,
+   "normalized": 0.001924012
+  },
+  "iron_se_192k": {
+   "iterations": 1.0385,
+   "normalized": 0.002118704
+  },
+  "la2a_opto_96k": {
+   "iterations": 1.3556,
+   "normalized": 0.01139891
+  }
+ }
+}

@@ -1,0 +1,51 @@
+name: Tests
+
+# Integration tests on every push and pull request: the realtime cab's accuracy
+# against the chain it's built from, and CPU regressions of the realtime
+# workloads (tests/perf_check.py vs tests/perf_baseline.json, machine
+# "github-ubuntu-24.04"). Linux only: cheap on a private repo.
+# The benchmark results are uploaded as an artifact for tracking over time.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JUCE_VERSION: "9.0.2"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Clone JUCE
+        run: git clone --depth 1 --branch "$JUCE_VERSION" https://github.com/juce-framework/JUCE.git JUCE
+
+      # CMake configures the JUCE products too (juceaide builds at configure time)
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev \
+            libxcursor-dev libxext-dev libxi-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev libegl-dev libjack-jackd2-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCD_COPY_PLUGINS=OFF -DCD_BUILD_TOOLS=ON -DCD_PERF_MACHINE=github-ubuntu-24.04
+
+      - name: Build test tools
+        run: cmake --build build --parallel 4 --target cab_check perf_bench
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: perf-results-${{ github.sha }}
+          path: build/perf_results.json
+          if-no-files-found: ignore

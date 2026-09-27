@@ -314,6 +314,19 @@ private:
     }
 };
 
+// power mean of the response at the mic over 200 Hz - 4 kHz (dB SPL for 2.83 V)
+inline double bandLevelOf(const CabDisplay& d)
+{
+    double sum = 0;
+    int n = 0;
+    for (size_t i = 0; i < d.freq.size(); ++i)
+        if (d.freq[i] >= 200 && d.freq[i] <= 4000) {
+            sum += std::pow(10.0, d.spl[i] / 10);
+            ++n;
+        }
+    return n ? 10 * std::log10(sum / n) : 0.0;
+}
+
 // ---- the whole cab, realtime ---------------------------------------------------------
 // Audio thread: prepare() once (allocates, builds the first IR synchronously), then
 // set() at control rate and process() per sample. A worker thread rebuilds the IR
@@ -369,6 +382,9 @@ public:
         return p;
     }
     unsigned displayVersion() const { return dispVersion.load(std::memory_order_acquire); }
+    // broadband level at the mic, 200 Hz - 4 kHz (power mean, dB SPL for 2.83 V), after the
+    // last rebuild: lock-free, for an auto-level on the audio thread
+    float bandLevelDb() const { return bandLevel.load(std::memory_order_relaxed); }
     CabDisplay display() const
     {
         std::lock_guard<std::mutex> l(dispMutex);
@@ -424,6 +440,7 @@ private:
     IRSpectra* parked = nullptr;
     std::thread worker;
     std::atomic<bool> running { false };
+    std::atomic<float> bandLevel { 0 };
     mutable std::mutex dispMutex;   // UI thread and worker only
     CabDisplay disp;
     std::atomic<unsigned> dispVersion { 0 };
@@ -432,6 +449,7 @@ private:
     {
         CabDisplay d;
         builder.display(p, d);
+        bandLevel = (float) bandLevelOf(d);
         {
             std::lock_guard<std::mutex> l(dispMutex);
             disp = std::move(d);
