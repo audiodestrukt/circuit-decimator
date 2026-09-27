@@ -42,6 +42,7 @@
 // A rigid piston is T_j = 1.
 #pragma once
 
+#include "Bessel.h"
 #include "Cone.h"
 #include "MicModels.h"
 
@@ -90,7 +91,7 @@ inline std::complex<double> micReflection(const Cone& cone, const Mic& mic, doub
     const double z = 2 * d;
     const std::complex<double> disc = std::polar(1.0, -k * z) - std::polar(1.0, -k * std::sqrt(z * z + a * a));
     const double x = k * a * std::abs(std::sin(2 * mic.angle));
-    const double tilt = x < 1e-9 ? 1.0 : 2 * std::cyl_bessel_j(1.0, x) / x;
+    const double tilt = x < 1e-9 ? 1.0 : 2 * besselJ(1, x) / x;
     return 1.0 + rs * tilt * disc;
 }
 

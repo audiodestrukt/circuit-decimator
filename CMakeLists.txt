@@ -23,6 +23,8 @@ endif()
 # ---- plain C++ circuit core (no JUCE): solver, knobs, presets, macros
 add_library(cd_circuit INTERFACE)
 target_include_directories(cd_circuit INTERFACE core products)
+# M_PI and friends on MSVC (the core uses them throughout)
+target_compile_definitions(cd_circuit INTERFACE _USE_MATH_DEFINES)
 
 if(CD_BUILD_TOOLS)
     # Offline harness for the realtime solver; sim/compare.py checks it against ngspice.

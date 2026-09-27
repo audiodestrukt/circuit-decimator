@@ -45,7 +45,7 @@ inline double struveH1(double x)
         }
         return sum;
     }
-    return 2 / M_PI - std::cyl_bessel_j(0.0, x) + (16 / M_PI - 5) * std::sin(x) / x
+    return 2 / M_PI - besselJ(0, x) + (16 / M_PI - 5) * std::sin(x) / x
            + (12 - 36 / M_PI) * (1 - std::cos(x)) / (x * x);
 }
 
@@ -54,7 +54,7 @@ inline std::complex<double> pistonRadiation(double w, double a)
 {
     const double k = w / kC, x = 2 * k * a, S = M_PI * a * a;
     if (x < 1e-6) return { 0.0, 0.0 };
-    return kRho * kC * S * std::complex<double>(1 - 2 * std::cyl_bessel_j(1.0, x) / x, 2 * struveH1(x) / x);
+    return kRho * kC * S * std::complex<double>(1 - 2 * besselJ(1, x) / x, 2 * struveH1(x) / x);
 }
 
 struct CoupledDriver {
