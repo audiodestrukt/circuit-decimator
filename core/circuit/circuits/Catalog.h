@@ -483,7 +483,8 @@ private:
 // The driver + box circuit per sample, convolved with the physics IR a worker
 // thread rebuilds when a knob moves (acoustic/CabModel.h). Defaults: the
 // Eminence Legend 1258 as calibrated in sim/speaker/, 50 l closed box, a
-// cardioid 2 cm capsule 2.5 cm from the dust cap.
+// cardioid 2 cm capsule 2.5 cm from the dust cap. Speaker size rescales the
+// cone (the moving mass follows); the back opening turns it into an open back.
 class CabBench : public BenchCircuit {
 public:
     CabBench()
@@ -504,8 +505,11 @@ public:
         add(kMicDistance, "micdist", "Distance", 0.5, 60, 5, 1e-2, "cm", 1, g);
         add(kMicAngle, "micang", "Angle (towards centre)", -60, 60, -60, M_PI / 180, "deg", 0, g);
         add(kMicCapsule, "miccap", "Capsule diameter", 3, 40, 15, 1e-3, "mm", 0, g);
-        add(kMicPattern, "micpat", "Pattern (1 omni, 0 fig-8)", 0, 1, 0, 1, "", 2, g);
+        add(kMicModel, "micmodel", "Measured dynamic (1) / ideal (0)", 0, 1, 0, 1, "", 0, g);
+        add(kMicPattern, "micpat", "Ideal pattern (1 omni, 0 fig-8)", 0, 1, 0, 1, "", 2, g);
+        add(kMicFace, "micface", "Mic face (reflects; 0 = none)", 0, 60, 30, 1e-3, "mm", 0, g);
         g = "Cone";
+        add(kConeRadius, "size", "Speaker size (nominal)", 6, 15, 10, 0.01058, "in", 1, g);   // radiating radius ~ 0.83 x nominal / 2
         add(kYoungs, "E", "Paper stiffness", 0.5, 10, 3, 1e9, "GPa", 2, g);
         add(kDensity, "rho", "Paper density", 200, 1000, 450, 1, "kg/m3", 0, g);
         add(kThickness, "h", "Thickness (edge)", 0.15, 1.0, 0.35, 1e-3, "mm", 3, g);
@@ -526,12 +530,14 @@ public:
         add(kL2, "l2", "L2 (eddy)", 0.01, 5, 1, 1e-3, "mH", 3, g);
         add(kR2, "r2", "R2 (eddy)", 0.5, 50, 7, 1, "Ohm", 2, g);
         add(kBl, "bl", "Bl", 4, 25, 4, 1, "T m", 2, g);
-        add(kMms, "mms", "Mms", 10, 80, 30, 1e-3, "g", 1, g);
+        add(kMotorMass, "motor", "Coil + former mass", 1, 30, 6, 1e-3, "g", 2, g);
         add(kCms, "cms", "Cms", 0.02, 0.5, 0.1, 1e-3, "mm/N", 4, g);
         add(kRms, "rms", "Rms", 0.5, 10, 3, 1, "N s/m", 2, g);
         g = "Box";
-        add(kVb, "vb", "Volume (closed back)", 10, 200, 50, 1e-3, "l", 0, g);
+        add(kVb, "vb", "Volume", 10, 200, 50, 1e-3, "l", 0, g);
         add(kQa, "qa", "Absorption Q", 2, 100, 20, 1, "", 1, g);
+        add(kOpenArea, "open", "Back opening (0 = closed)", 0, 2500, 200, 1e-4, "cm2", 0, g);
+        add(kBaffle, "baffle", "Front (baffle) size", 30, 80, 45, 1e-2, "cm", 0, g);
 
         cab.prepare(48000);   // a scratch build for the normalisation; prepare() redoes it at the run rate
         c = &cab.circuit();

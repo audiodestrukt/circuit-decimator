@@ -9,11 +9,17 @@
 .param ramp=0.05 re=6.4 le=0.4m l2=0.8m r2=12
 .param bl=12 mms=0.022 cms=1.8e-4 rms=1.84 sd=0.053
 .param vb=0.05 qa=20 rho=1.204 c0=343
+* back opening: area (m^2, 0 = closed) and panel thickness; its air plug is a mass in
+* parallel with the box air (in series here, in the mobility analogy)
+.param open=0 panel=0.018
+.param mp={open > 0 ? min(1e6, rho*(panel + 1.7*sqrt(open/3.14159265358979))/open) : 1e6}
 .param cab={vb/(rho*c0*c0)}
 .param fs0={1/(2*3.14159265358979*sqrt(mms*cms))}
 .param vas={rho*c0*c0*sd*sd*cms}
 .param fc={fs0*sqrt(1 + vas/vb)}
 .param rabinv={2*3.14159265358979*fc*cab*qa}
+.param wh={1/sqrt(mp*cab)}
+.param rpinv={2*3.14159265358979*c0/(rho*wh*wh)}
 
 Vin src 0 dc 0 ac 1 pulse(0 1 1m 1n 1n 1 2)
 Ramp src amp {ramp}
@@ -40,8 +46,10 @@ Vxc xc 0 0
 Fxc 0 u Vxc {sd}
 
 Lcab q lq {cab}
-Rlq lq 0 1e-12
-Rrab q 0 {rabinv}
+Rlq lq mb 1e-12
+Rrab q mb {rabinv}
+Cmp mb 0 {mp}
+Rrp mb 0 {rpinv}
 
 .control
 set wr_singlescale

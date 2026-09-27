@@ -61,6 +61,9 @@ struct CoupledDriver {
     // per bin: the electrical impedance of the coil (with the amp's R), the circuit's
     // mechanical impedance, and the true one (cone and air load as they really are)
     std::vector<std::complex<double>> ze, zm, zt;
+    // per bin: the share of the cone's rear air flow that leaves through the back
+    // opening (the rest compresses the box air); 0 for a closed back
+    std::vector<std::complex<double>> rearFraction;
     double bl2 = 0, rAmp = 0;
 };
 
@@ -71,6 +74,12 @@ inline CoupledDriver coupledDriver(const DriverParams& d, const BoxParams& b, do
     out.ze.assign(n / 2 + 1, 0.0);
     out.zm.assign(n / 2 + 1, 0.0);
     out.zt.assign(n / 2 + 1, 0.0);
+    out.rearFraction.assign(n / 2 + 1, 0.0);
+    // the back opening: the circuit's air plug (constant radiation resistance) and the
+    // true one (inner end correction + a baffled piston's radiation impedance outside)
+    const double mp = openingMass(b), rpc = openingResistance(b);
+    const bool open = b.open > 0 && mp < kClosedMass;
+    const double ro = open ? std::sqrt(b.open / M_PI) : 0.0;
     out.bl2 = d.bl * d.bl;
     out.rAmp = rAmp;
     const double mAir = 2 * 8 * kRho * radius * radius * radius / 3;
@@ -83,14 +92,21 @@ inline CoupledDriver coupledDriver(const DriverParams& d, const BoxParams& b, do
         const double w = 2 * M_PI * fs * (double) k / (double) n;
         const std::complex<double> s(0, w);
         out.ze[k] = rAmp + d.re + s * d.le + (s * d.l2 * d.r2) / (s * d.l2 + d.r2);
-        const auto box = d.sd * d.sd * (1.0 / (s * cab) + rab);
+        const auto zair = 1.0 / (s * cab) + rab;                            // box air + absorption
+        const std::complex<double> zpc = s * mp + rpc;                      // opening, as the circuit has it
+        const std::complex<double> zpt = open
+            ? s * (kRho * (b.panel + 0.85 * ro) / b.open) + pistonRadiation(w, ro) / (b.open * b.open)
+            : zpc;
+        const auto box = d.sd * d.sd * zair * zpc / (zair + zpc);
+        const auto boxTrue = d.sd * d.sd * zair * zpt / (zair + zpt);
+        out.rearFraction[k] = open ? zair / (zair + zpt) : 0.0;
         out.zm[k] = s * d.mms + 1.0 / (s * d.cms) + d.rms + box;
         // above the solved band: hold the cone's last impedance (as a mass-like term scaled with w)
         std::complex<double> zc = ct.Z[k];
         if (!(std::abs(zc) > 0)) zc = zcLast * (w / wLast);
         else { zcLast = zc; wLast = w; }
         out.zt[k] = s * (d.mms - mAir - ct.rigidMass) + zc + 2.0 * pistonRadiation(w, radius)
-                    + 1.0 / (s * d.cms) - mat.surroundK / s + (d.rms - mat.surroundR) + box;
+                    + 1.0 / (s * d.cms) - mat.surroundK / s + (d.rms - mat.surroundR) + boxTrue;
     }
     return out;
 }

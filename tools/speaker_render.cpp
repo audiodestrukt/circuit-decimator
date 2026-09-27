@@ -10,7 +10,7 @@
 //   speaker_render file <in.txt> <out.txt> [--fs Hz] [--set ...]
 //       amp volts, one sample per line at fs -> cone velocity (m/s), one per line
 //
-// params: re le l2 r2 bl mms cms rms sd vb qa
+// params: re le l2 r2 bl mms cms rms sd vb qa open panel
 #include "circuit/circuits/Speaker.h"
 
 #include <complex>
@@ -32,7 +32,8 @@ int main(int argc, char** argv)
     if (argc < first) { std::fprintf(stderr, "bad arguments\n"); return 2; }
     std::map<std::string, double*> names { { "re", &d.re }, { "le", &d.le }, { "l2", &d.l2 }, { "r2", &d.r2 },
                                            { "bl", &d.bl }, { "mms", &d.mms }, { "cms", &d.cms }, { "rms", &d.rms },
-                                           { "sd", &d.sd }, { "vb", &b.vb }, { "qa", &b.qa } };
+                                           { "sd", &d.sd }, { "vb", &b.vb }, { "qa", &b.qa },
+                                           { "open", &b.open }, { "panel", &b.panel } };
     for (int i = first; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--fs") && i + 1 < argc) fs = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--set") && i + 1 < argc) {

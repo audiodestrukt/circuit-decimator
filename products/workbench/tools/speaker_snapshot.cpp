@@ -3,6 +3,7 @@
 //
 //   speaker_snapshot out.png [--width W] [--height H] [--hz F] [param=value ...]
 //   params: CabParam names in SI units, e.g. depth=0.04 ribs=8 taper=2.5 micoff=0.08 micang=30 (deg) vb=0.1
+//           size=10 (nominal inches) open=0.05 (m^2) baffle=0.5
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "ui/SpeakerView.h"
@@ -19,6 +20,8 @@ int main(int argc, char** argv)
         { "E", kYoungs }, { "rho", kDensity }, { "h", kThickness }, { "taper", kTaper }, { "ribs", kRibs }, { "aniso", kAniso },
         { "eta", kLoss }, { "depth", kDepth }, { "curve", kCurve }, { "dcr", kDustCap }, { "dcm", kCapMass },
         { "sr", kSurroundR }, { "skr", kSurroundKr }, { "bl", kBl }, { "vb", kVb }, { "qa", kQa },
+        { "size", kConeRadius }, { "open", kOpenArea }, { "baffle", kBaffle }, { "motor", kMotorMass },
+        { "micmodel", kMicModel }, { "micface", kMicFace },
         { "micoff", kMicOffset }, { "micdist", kMicDistance }, { "micang", kMicAngle }, { "miccap", kMicCapsule }, { "micpat", kMicPattern } };
     int w = 900, h = 560;
     double hz = 2300;
@@ -34,6 +37,7 @@ int main(int argc, char** argv)
         auto it = names.find(key);
         if (it == names.end()) { std::fprintf(stderr, "unknown param %s\n", key.c_str()); return 2; }
         if (key == "micang") v *= M_PI / 180;
+        if (key == "size") v *= 0.01058;   // nominal inches -> radiating radius
         cab.set(it->second, v);
     }
     // let the worker rebuild with the new parameters

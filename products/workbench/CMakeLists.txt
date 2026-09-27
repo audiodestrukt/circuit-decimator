@@ -26,6 +26,12 @@ target_link_libraries(CircuitDecimator
 # with presets, search results, bypass, scope, schematic and solver stats.
 juce_add_gui_app(CircuitBench PRODUCT_NAME "Circuit Bench" BUNDLE_ID com.audiodestrukt.circuitbench)
 target_sources(CircuitBench PRIVATE bench/Main.cpp PluginProcessor.cpp)
+# JACK backend (loaded at runtime): on Linux, `pw-jack "Circuit Bench"` runs it on
+# PipeWire's graph, one clock for every device -- no drift between an input on one
+# interface and an output on another
+if(UNIX AND NOT APPLE)
+    set_target_properties(CircuitBench PROPERTIES CD_JACK ON)
+endif()
 target_include_directories(CircuitBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(CircuitBench PRIVATE
     JUCE_APPLICATION_NAME_STRING="Circuit Bench"

@@ -3,7 +3,7 @@
 //
 //   radiation_check spectrum|ir [--fs Hz] [--n N] [--fmax Hz]
 //       [--radius m] [--depth m] [--dustcap m] [--caph m]
-//       [--offset m] [--distance m] [--angle deg] [--capsule m] [--pattern 0..1]
+//       [--offset m] [--distance m] [--angle deg] [--capsule m] [--pattern 0..1] [--micmodel 0|1] [--face m]
 //       [--coil m] [--sm kg] [--capkr N/m] [--capkrot] [--skr N/m] [--nu]
 //       [--couple 0|1] (the cone's load on the motor; needs --breakup 1) with the driver:
 //       [--re --le --l2 --r2 --bl --mms --cms --rms --sd --vb --qa] (vb huge = infinite baffle)
@@ -47,6 +47,8 @@ int main(int argc, char** argv)
         else if (k == "--angle") m.angle = v * M_PI / 180;
         else if (k == "--capsule") m.capsule = v;
         else if (k == "--pattern") m.pattern = v;
+        else if (k == "--micmodel") m.model = (int) v;
+        else if (k == "--face") m.face = v;
         else if (k == "--breakup") breakup = v != 0;
         else if (k == "--couple") couple = v != 0;
         else if (k == "--re") drv.re = v;

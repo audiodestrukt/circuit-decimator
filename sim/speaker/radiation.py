@@ -92,6 +92,31 @@ def main():
         print(f"   capsule {cap*1000:4.0f} mm: vs point {np.max(np.abs(db(hc) - db(hpt))[band]):5.2f} dB max below 12 kHz, "
               f"{db(hc[i8k]) - db(hpt[i8k]):+6.2f} dB at 8 kHz")
 
+    print("\n5. measured mic (dynamic cardioid, datasheet): polar pickup through the full model vs the datasheet")
+    import json
+    T = json.load(open(os.path.join(HERE, "reference", "mic", "sm57_polar.json")))
+    small = ["--radius", 0.005, "--dustcap", 0.001, "--depth", 0, "--caph", 0, "--micmodel", 1, "--capsule", 0.016]
+    f, h0 = spectrum(*small, "--distance", 3.0, n=8192)
+    errs = []
+    for ang in [30, 60, 90, 120]:
+        f, h = spectrum(*small, "--distance", 3.0, "--angle", ang, n=8192)
+        row = []
+        for fq in [125, 500, 1000, 2000, 4000, 8000]:
+            i = np.argmin(np.abs(f - fq))
+            m, ref = db(h[i] / h0[i]), T[str(fq)][str(ang)]
+            row.append(f"{m:6.1f}/{ref:6.1f}")
+            if np.isfinite(ref): errs.append(m - ref)
+        print(f"   {ang:3d} deg (model/datasheet, 125 Hz .. 8 kHz): " + " ".join(row))
+    errs = np.array(errs)
+    print(f"   rms {np.sqrt(np.mean(errs**2)):.2f} dB, max {np.max(np.abs(errs)):.1f} dB")
+    fo, hm = spectrum(*small, "--distance", 3.0, n=8192)
+    fo, hi = spectrum("--radius", 0.005, "--dustcap", 0.001, "--depth", 0, "--caph", 0, "--pattern", 0.5, "--capsule", 0.016, "--distance", 3.0, n=8192)
+    resp = np.loadtxt(os.path.join(HERE, "reference", "mic", "sm57_response.csv"), delimiter=",", skiprows=1)
+    fr = np.geomspace(100, 12000, 40)
+    mr = np.interp(fr, fo, db(hm / hi)) - np.interp(1000, fo, db(hm / hi))
+    rr = np.interp(np.log(fr), np.log(resp[:, 0]), resp[:, 1])
+    print(f"   on-axis response vs the datasheet curve, 100 Hz - 12 kHz: max {np.max(np.abs(mr - rr)):.2f} dB")
+
     if a.plot:
         import matplotlib
         matplotlib.use("Agg")

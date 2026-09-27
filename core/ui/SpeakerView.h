@@ -97,7 +97,8 @@ private:
     {
         using namespace acoustic;
         const double a = p[kConeRadius], rc = p[kCoilRadius], depth = p[kDepth];
-        const double boxFront = 0.45, boxDepth = p[kVb] / (boxFront * boxFront);
+        const double boxFront = p[kBaffle], boxDepth = p[kVb] / (boxFront * boxFront);
+        const double openSide = std::min(boxFront, std::sqrt(std::max(0.0, p[kOpenArea])));   // drawn as a square hole
         const double z0 = -depth;                                   // the neck
         const double motor = 0.012 * juce::jlimit(0.4, 2.5, p[kBl] / 10.9);   // magnet height from Bl
         const double zBack = z0 - 0.03 - motor - 0.01;
@@ -116,7 +117,15 @@ private:
         g.setColour(wood.withAlpha(0.25f));
         g.fillRect(boxR);
         g.setColour(wood.brighter(0.4f));
-        g.drawRect(boxR, 3.0f);
+        // walls: top, bottom, and the back panel with the opening cut out of it
+        g.drawLine(boxR.getX(), boxR.getY(), boxR.getRight(), boxR.getY(), 3.0f);
+        g.drawLine(boxR.getX(), boxR.getBottom(), boxR.getRight(), boxR.getBottom(), 3.0f);
+        {
+            const auto top = P(-boxDepth, boxFront / 2), bottom = P(-boxDepth, -boxFront / 2);
+            const auto holeTop = P(-boxDepth, openSide / 2), holeBottom = P(-boxDepth, -openSide / 2);
+            g.drawLine(top.x, top.y, holeTop.x, holeTop.y, 3.0f);
+            g.drawLine(holeBottom.x, holeBottom.y, bottom.x, bottom.y, 3.0f);
+        }
         {
             // absorption: more stuffing (hatching) for a lower Qa
             juce::Graphics::ScopedSaveState clipBox(g);
@@ -134,8 +143,12 @@ private:
             g.fillRect(b);
         }
         {
-            juce::String bl = "closed box " + juce::String(juce::roundToInt(p[kVb] * 1e3)) + " l (" + juce::String(juce::roundToInt(boxDepth * 100))
-                              + " cm deep behind a 45 cm baffle), Qa " + juce::String(juce::roundToInt(p[kQa]));
+            juce::String bl = (p[kOpenArea] > 0 ? "open back (" + juce::String(juce::roundToInt(p[kOpenArea] * 1e4)) + " cm2, Helmholtz "
+                                                      + juce::String(juce::roundToInt(helmholtzHz(disp.box))) + " Hz), "
+                                                : juce::String("closed box, "))
+                              + juce::String(juce::roundToInt(p[kVb] * 1e3)) + " l (" + juce::String(juce::roundToInt(boxDepth * 100))
+                              + " cm deep behind a " + juce::String(juce::roundToInt(boxFront * 100)) + " cm baffle), Qa "
+                              + juce::String(juce::roundToInt(p[kQa]));
             if (P(-boxDepth, 0).x < area.getX()) bl << "  (continues off the left)";
             label(g, bl, { area.getX() + 4, area.getBottom() - 34 });
         }
@@ -236,6 +249,21 @@ private:
             g.strokePath(cap, juce::PathStrokeType(2.0f + 2.5f * heavy));
         }
 
+        // ---- an open back's rear wave: out of the opening, round the box, to the mic
+        if (p[kOpenArea] > 0) {
+            const double side = p[kMicOffset] < 0 ? -1.0 : 1.0;
+            juce::Path rear;
+            rear.startNewSubPath(P(-boxDepth - 0.01, 0));
+            rear.lineTo(P(-boxDepth - 0.01, side * (boxFront / 2 + 0.01)));
+            rear.lineTo(P(0.005, side * (boxFront / 2 + 0.01)));
+            rear.lineTo(P(std::min(p[kMicDistance], 0.3), p[kMicOffset]));
+            float dash[] = { 5.0f, 4.0f };
+            juce::Path dashed;
+            juce::PathStrokeType(1.4f).createDashedStroke(dashed, rear, dash, 2);
+            g.setColour(juce::Colour(0xff5fb3ff).withAlpha(0.55f));
+            g.fillPath(dashed);
+        }
+
         // ---- the moving cone at the cursor frequency
         double fShown = cursorHz;
         if (const auto* shape = shapeAt(cursorHz, fShown); shape && shape->size() == nn + 1) {
@@ -271,7 +299,7 @@ private:
             const float capPx = juce::jmax(3.0f, (float) cap * sc);
             // body: away from the capsule along -axis
             juce::Path body;
-            const double bl = 0.11, bw = std::max(cap * 1.2, 0.024) / 2;
+            const double bl = 0.11, bw = std::max({ cap * 1.2, 0.024, p[kMicFace] }) / 2;
             const double pz = -ar, pr = ax;   // perpendicular
             auto B = [&](double s, double w) { return P(zm - ax * s + pz * w, off - ar * s + pr * w); };
             body.startNewSubPath(B(cap / 2, bw));
@@ -287,7 +315,7 @@ private:
             g.setColour(juce::Colour(0xffa9b3bd));
             g.fillEllipse(c.x - capPx / 2, c.y - capPx / 2, capPx, capPx);
             // polar pattern ghost: |alpha + (1 - alpha) cos theta|, 5 cm across
-            const double alpha = p[kMicPattern];
+            const double alpha = std::lround(p[kMicModel]) == 1 ? mics::dynamicAlpha(cursorHz) : p[kMicPattern];
             juce::Path pol;
             for (int i = 0; i <= 72; ++i) {
                 const double th = 2 * M_PI * i / 72.0;
@@ -315,6 +343,9 @@ private:
             << juce::String(p[kLoss], 3);
         if (p[kRibs] > 1.2) mat << ", ribs x" << juce::String(p[kRibs], 1);
         label(g, mat, { area.getX() + 4, area.getY() + 2 });
+        label(g, juce::String(p[kConeRadius] / 0.01058, 1) + "\" speaker, moving mass " + juce::String(disp.mms * 1e3, 1)
+                     + " g (coil + former " + juce::String(p[kMotorMass] * 1e3, 1) + " g, the rest cone, cap, surround, air)",
+              { area.getX() + 4, area.getY() + 34 });
         label(g, "dust cap " + juce::String(p[kDustCap] * 200, 1) + " cm across, " + juce::String(p[kCapMass] * 1e3, 2) + " g;  Bl "
                      + juce::String(p[kBl], 1) + " T m;  surround damping " + juce::String(p[kSurroundR], 2),
               { area.getX() + 4, area.getY() + 18 });

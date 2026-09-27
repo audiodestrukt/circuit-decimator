@@ -43,6 +43,7 @@
 #pragma once
 
 #include "Cone.h"
+#include "MicModels.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,8 +61,39 @@ struct Mic {
     double angle = 0.0;          // tilt of the mic's axis in the offset plane (rad): 0 = square to the baffle,
                                  //   positive = pointing back towards the cone's centre
     double capsule = 0.02;       // diaphragm diameter (m)
-    double pattern = 0.5;        // 1 omni, 0.5 cardioid, 0 figure-8
+    double pattern = 0.5;        // 1 omni, 0.5 cardioid, 0 figure-8 (the ideal mic)
+    int model = 0;               // 0 ideal (pattern above, flat); 1 dynamic cardioid, measured (MicModels.h)
+    double face = 0.0;           // the mic's front face (grille) diameter (m); 0 = acoustically transparent
 };
+
+// The mic isn't transparent: its front face reflects the sound arriving from the
+// speaker back down to the surface below it (dust cap, cone or baffle), which
+// reflects it back up to the capsule, a round trip of 2d later (d: mic face to
+// that surface along the mic's axis -- the cone is recessed, so d changes as the
+// mic moves across it). The face is a disc of radius a: on its axis at distance z,
+// its reflection of a normally incident wave is (Kirchhoff, Fresnel zones)
+//   e^{-jkz} - e^{-jk sqrt(z^2 + a^2)}
+// relative to an infinite wall's (weak while the disc is small against the
+// wavelength, strong above). Tilting the mic by theta sends the return off at
+// 2 theta: a disc's directivity 2 J1(x)/x, x = k a sin 2 theta. One round trip;
+// the surface reflects with rs (paper cone and dust cap ~0.8, baffle ~0.9).
+// Returns 1 + Gamma: the factor on the pressure at the capsule.
+inline std::complex<double> micReflection(const Cone& cone, const Mic& mic, double f)
+{
+    if (mic.face <= 0 || f <= 0) return 1.0;
+    const double k = 2 * M_PI * f / kC, a = mic.face / 2;
+    const double r = std::abs(mic.offset);
+    const bool overCone = r < cone.radius;
+    const double zs = overCone ? coneHeight(cone, r) : 0.0;
+    const double d = std::max(0.002, (mic.distance - zs) / std::max(0.2, std::cos(mic.angle)));
+    const double rs = overCone ? 0.8 : 0.9;
+    const double z = 2 * d;
+    const std::complex<double> disc = std::polar(1.0, -k * z) - std::polar(1.0, -k * std::sqrt(z * z + a * a));
+    const double x = k * a * std::abs(std::sin(2 * mic.angle));
+    const double tilt = x < 1e-9 ? 1.0 : 2 * std::cyl_bessel_j(1.0, x) / x;
+    return 1.0 + rs * tilt * disc;
+}
+
 
 // ---- a small radix-2 FFT (in place) ---------------------------------------------
 inline void fft(std::vector<std::complex<double>>& a, bool inverse)
@@ -88,6 +120,25 @@ inline void fft(std::vector<std::complex<double>>& a, bool inverse)
     }
     if (inverse)
         for (auto& x : a) x /= (double) n;
+}
+
+// The minimum-phase response with magnitude `mag` (bins 0..n/2 of an n-point FFT),
+// by the real cepstrum: a measured capsule response is causal, and applying it
+// with zero phase would put part of the IR before t = 0.
+inline std::vector<std::complex<double>> minimumPhase(const std::vector<double>& mag, size_t n)
+{
+    std::vector<std::complex<double>> c(n);
+    for (size_t k = 0; k <= n / 2; ++k) {
+        const double l = std::log(std::max(mag[k], 1e-9));
+        c[k] = l;
+        if (k > 0 && k < n / 2) c[n - k] = l;
+    }
+    fft(c, true);                       // real cepstrum
+    for (size_t i = 1; i < n / 2; ++i) { c[i] *= 2.0; c[n - i] = 0.0; }   // fold onto positive quefrency
+    fft(c, false);
+    std::vector<std::complex<double>> out(n / 2 + 1);
+    for (size_t k = 0; k <= n / 2; ++k) out[k] = std::exp(c[k]);
+    return out;
 }
 
 struct Patch {
@@ -174,7 +225,7 @@ inline MicRings rings(const Cone& cone, const Mic& mic, double fs, size_t n, dou
     // mic axis: pointing from the mic towards the baffle (-z), tilted by angle towards -x (the centre)
     const double ax = -std::sin(mic.angle), az = -std::cos(mic.angle);
     const auto pts = diaphragm(mic, ax, az);
-    const double alpha = std::clamp(mic.pattern, 0.0, 1.0);
+    const double alphaIdeal = std::clamp(mic.pattern, 0.0, 1.0);
     constexpr int half = 16;   // windowed-sinc half width (taps)
     auto deposit = [&](std::vector<double>& buf, double tSamples, double w) {
         const int i0 = (int) std::floor(tSamples);
@@ -188,11 +239,27 @@ inline MicRings rings(const Cone& cone, const Mic& mic, double fs, size_t n, dou
     };
     const double t0 = 0.42 * fs, t1 = std::min(0.5 * fs, std::max(t0 + 1, maxFreq * 1.05));
     double minTau = 1e9;
-    std::vector<double> A(n), B(n);
-    std::vector<std::complex<double>> a(n), b(n);
+    // three trains per ring, so the pattern may change with frequency:
+    //   A0 = sum dS/R (pressure), A1 = sum dS/R cos psi, B1 = sum dS/R^2 cos psi (gradient)
+    //   H = rho/2pi [ j w (alpha A0 + (1 - alpha) A1) + c (1 - alpha) B1 ]
+    std::vector<double> A0(n), A1(n), B1(n);
+    std::vector<std::complex<double>> a0(n), a1(n), b1(n);
+    // per-bin mic factors: the pattern mix, the capsule's own response, the face reflection
+    std::vector<double> alpha(n / 2 + 1), respMag(n / 2 + 1, 1.0), taper(n / 2 + 1);
+    std::vector<std::complex<double>> refl(n / 2 + 1);
+    for (size_t k = 0; k <= n / 2; ++k) {
+        const double f = fs * (double) k / (double) n;
+        alpha[k] = mic.model == 1 ? mics::dynamicAlpha(std::max(f, 1.0)) : alphaIdeal;
+        if (mic.model == 1) respMag[k] = mics::dynamicResponse(std::max(f, 1.0));
+        refl[k] = micReflection(cone, mic, f);
+        const double lo = std::min(t0, maxFreq);   // taper the top of the band (the differentiator)
+        taper[k] = f <= lo ? 1.0 : 0.5 * (1 + std::cos(M_PI * std::min(1.0, (f - lo) / std::max(1.0, t1 - lo))));
+    }
+    const auto resp = mic.model == 1 ? minimumPhase(respMag, n) : std::vector<std::complex<double>>(n / 2 + 1, 1.0);
     for (const auto& ring : surf) {
-        std::fill(A.begin(), A.end(), 0.0);
-        std::fill(B.begin(), B.end(), 0.0);
+        std::fill(A0.begin(), A0.end(), 0.0);
+        std::fill(A1.begin(), A1.end(), 0.0);
+        std::fill(B1.begin(), B1.end(), 0.0);
         for (const auto& d : pts)
             for (const auto& p : ring.patches) {
                 const double dx = d.x - p.x, dy = d.y - p.y, dz = d.z - p.z;
@@ -201,20 +268,20 @@ inline MicRings rings(const Cone& cone, const Mic& mic, double fs, size_t n, dou
                 const double cosPsi = (-dx * ax - dz * az) / R;
                 const double tau = R / kC;
                 minTau = std::min(minTau, tau);
-                deposit(A, tau * fs, d.w * p.area / R * (alpha + (1 - alpha) * cosPsi));
-                deposit(B, tau * fs, d.w * p.area / (R * R) * (1 - alpha) * cosPsi);
+                deposit(A0, tau * fs, d.w * p.area / R);
+                deposit(A1, tau * fs, d.w * p.area / R * cosPsi);
+                deposit(B1, tau * fs, d.w * p.area / (R * R) * cosPsi);
             }
-        for (size_t i = 0; i < n; ++i) { a[i] = A[i]; b[i] = B[i]; }
-        fft(a, false);
-        fft(b, false);
+        for (size_t i = 0; i < n; ++i) { a0[i] = A0[i]; a1[i] = A1[i]; b1[i] = B1[i]; }
+        fft(a0, false);
+        fft(a1, false);
+        fft(b1, false);
         std::vector<std::complex<double>> h(n / 2 + 1);
         for (size_t k = 0; k <= n / 2; ++k) {
-            const double f = fs * (double) k / (double) n;
-            const double w = 2 * M_PI * f;
-            // taper the top of the band so the differentiator doesn't ring at Nyquist
-            const double lo = std::min(t0, maxFreq);
-            const double taper = f <= lo ? 1.0 : 0.5 * (1 + std::cos(M_PI * std::min(1.0, (f - lo) / std::max(1.0, t1 - lo))));
-            h[k] = kRho / (2 * M_PI) * (std::complex<double>(0, w) * a[k] + kC * b[k]) * taper;
+            const double w = 2 * M_PI * fs * (double) k / (double) n;
+            const double al = alpha[k];
+            h[k] = kRho / (2 * M_PI) * (std::complex<double>(0, w) * (al * a0[k] + (1 - al) * a1[k]) + kC * (1 - al) * b1[k])
+                   * resp[k] * refl[k] * taper[k];
         }
         out.radius.push_back(ring.radius);
         out.H.push_back(std::move(h));

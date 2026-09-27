@@ -8,7 +8,27 @@ folder checks each piece of the "physics → IR" model against a reference.
 | Driver + closed box (lumped, per sample) | `core/circuit/circuits/Speaker.h` | exact network formula; `speaker.cir` (ngspice); closed-box theory | ngspice within 1e-7 dB of the formula; fitted fc and Qtc equal theory (124.74 Hz, 0.708); engine within 0.0001 dB below 300 Hz and 0.11 dB at 5 kHz at 96 kHz (trapezoidal frequency warping). `compare.py` |
 | Radiation to the mic (Rayleigh integral in the near field) | `core/acoustic/Radiation.h` | baffled-piston results: on-axis near field; far-field 2·J1(x)/x; the proximity effect 1 + 1/(jkr) | 0.15 dB on axis at 2.5 cm, 0.004 dB at 1 m; directivity within 0.05 dB; proximity within 0.01 dB at 20 cm; capsule averaging converges to the point mic. `radiation.py` |
 | Cone breakup (axisymmetric shell FE) | `core/acoustic/Cone.h` | flat limit, bending: driven annular plate (exact Bessel); flat limit, in-plane: radially driven annulus (exact Bessel); rigid limit; mesh convergence | bending 0.04 dB; membrane 0.02 dB (same resonance, 5584 Hz); the rigid-limit error shrinks as 1/E; 96 elements within 0.05 dB of 384. `cone.py` |
+| Back opening (open back) | `Speaker.h` (the air plug in parallel with the box air), `Coupling.h`, `CabModel.h` (the rear wave round the box) | the exact network and ngspice at 20–2000 cm^2; the Helmholtz formula | ngspice within 2.4e-6 dB of the formula, engine within 0.11 dB; a 20 cm^2 opening's impedance dip lands at 43.3 Hz against the formula's 44.2 Hz; closed (0 cm^2) is unchanged. The rear wave's diffraction round the box is approximate, and the front baffle's edge (baffle step) isn't modelled yet. `compare.py` (4) |
+| Measured mic (dynamic cardioid) | `MicModels.h`, `Radiation.h` | the manufacturer's polar curves (125 Hz – 8 kHz) and on-axis response, extracted from the datasheet PDF's vector paths (`reference/mic/`) | polar pickup through the full model within 0.76 dB RMS (max 1.6 dB) at 30–120 deg; on-axis response within 0.35 dB. `radiation.py` (5) |
+| Mic face reflection | `Radiation.h` (`micReflection`) | Kirchhoff disc reflection, one round trip mic face – cone/baffle | no reference data; about ±0.5–1 dB of comb for a 32 mm face 2.5 cm out |
 | Cone load on the motor (`Coupling.h`) | `core/acoustic/Coupling.h` | independent calculation, rigid cone: the circuit's fixed mass vs the true air load (baffled-piston radiation impedance, exact Struve series) | 0.009 dB, 0.003 deg; exactly 1 at low frequency, so the verified circuit is untouched |
+
+## Speaker size
+
+The moving mass is built from its parts: the coil and former (a knob, 6.6 g for
+the calibrated speaker), the paper, surround and dust cap (integrated from the
+cone's geometry and material exactly as the shell model does), and the air
+load. Sd follows the radius. So the speaker-size knob, and the paper knobs,
+move the driver's mass, resonance and sensitivity consistently:
+
+| Nominal size | Sd | Mms | Fs |
+|---|---|---|---|
+| 10" | 352 cm^2 | 23.9 g | 109 Hz |
+| 12" | 507 cm^2 | 32 g | 94 Hz |
+| 15" | 791 cm^2 | 49 g | 76 Hz |
+
+The calibrated 12"'s cone and motor are rescaled, so a 10" here is not a
+specific real 10" speaker.
 
 ## Calibration against a real speaker: Eminence Legend 1258
 

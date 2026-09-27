@@ -20,7 +20,16 @@ TOOL = os.path.join(HERE, "..", "..", "build", "speaker_render")
 RHO, C0 = 1.204, 343.0
 
 P = dict(ramp=0.05, re=6.4, le=0.4e-3, l2=0.8e-3, r2=12, bl=12, mms=0.022, cms=1.8e-4, rms=1.84,
-         sd=0.053, vb=0.05, qa=20)
+         sd=0.053, vb=0.05, qa=20, open=0.0, panel=0.018)
+
+
+def opening(p):
+    """the back opening's air plug: acoustic mass and (constant, circuit) radiation resistance"""
+    cab = p["vb"] / (RHO * C0 ** 2)
+    o = p.get("open", 0.0)
+    mp = min(1e6, RHO * (p.get("panel", 0.018) + 1.7 * np.sqrt(o / np.pi)) / o) if o > 0 else 1e6
+    wh = 1 / np.sqrt(mp * cab)
+    return mp, RHO * wh ** 2 / (2 * np.pi * C0), wh / (2 * np.pi)
 
 
 def ts(p):
@@ -40,7 +49,10 @@ def analytic(f, p):
     cab = p["vb"] / (RHO * C0 ** 2)
     rab = 1 / (2 * np.pi * fc * cab * p["qa"]) if np.isfinite(p["qa"]) else 0.0
     ze = p["re"] + s * p["le"] + (s * p["l2"] * p["r2"]) / (s * p["l2"] + p["r2"])
-    yq = 1 / (s * cab) + rab                       # admittance at q: inductor Cab, conductance R_ab
+    y1 = 1 / (s * cab) + rab                       # box air: inductor Cab, conductance R_ab
+    mp, rp, _ = opening(p)
+    y2 = s * mp + rp                               # back opening: capacitor M_p, conductance R_p
+    yq = y1 * y2 / (y1 + y2)                       # in series (mobility), at q
     yu = s * p["mms"] + 1 / (s * p["cms"]) + p["rms"] + p["sd"] ** 2 * yq
     zmot = p["bl"] ** 2 / yu
     i = 1 / (p["ramp"] + ze + zmot)
@@ -48,17 +60,22 @@ def analytic(f, p):
     return u, 1 / i   # Z seen by the source (includes the amp's R)
 
 
-def spice():
+def spice(over=None):
     work = tempfile.mkdtemp(prefix="spk_")
-    shutil.copy(DECK, os.path.join(work, "d.cir"))
+    txt = open(DECK).read()
+    for k, v in (over or {}).items():
+        txt, n = re.subn(rf"(?m)(^\.param\b.*?\b{k}=)(\S+)", rf"\g<1>{v:.6g}", txt)
+        assert n, k
+    open(os.path.join(work, "d.cir"), "w").write(txt)
     subprocess.run(["ngspice", "-b", "d.cir"], cwd=work, capture_output=True, check=True)
     ac = np.loadtxt(os.path.join(work, "ac.dat"), skiprows=1)
     st = np.loadtxt(os.path.join(work, "step.dat"), skiprows=1)
     return ac, st
 
 
-def engine_sweep(freqs):
-    r = subprocess.run([TOOL, "sweep", str(freqs[0]), str(freqs[-1]), str(len(freqs))],
+def engine_sweep(freqs, over=None):
+    sets = sum((["--set", f"{k}={v}"] for k, v in (over or {}).items()), [])
+    r = subprocess.run([TOOL, "sweep", str(freqs[0]), str(freqs[-1]), str(len(freqs)), *sets],
                        capture_output=True, text=True, check=True)
     return np.array([[float(x) for x in ln.split()] for ln in r.stdout.strip().splitlines()])
 
@@ -130,6 +147,29 @@ def main():
     us = np.interp(t, st[:, 0], st[:, 1])
     err = np.sqrt(np.mean((es[:, 1] - us) ** 2)) / np.sqrt(np.mean(us ** 2))
     print(f"   cone velocity, engine vs ngspice: rms err/rms {err:.2e}, peak {np.max(np.abs(us))*1e3:.2f} mm/s")
+
+    print("\n4. back opening (open back): engine and ngspice vs the exact network")
+    for area in [0.002, 0.01, 0.05, 0.2]:
+        q = dict(P, open=area)
+        _, _, fh = opening(q)
+        ac, _ = spice({"open": area})
+        f2 = ac[:, 0]
+        u2, z2 = analytic(f2, q)
+        hs2 = ac[:, 1] * np.exp(1j * ac[:, 2])
+        fe2 = np.geomspace(20, 5000, 20)
+        e2 = engine_sweep(fe2, {"open": area})
+        u2e, _ = analytic(e2[:, 0], q)
+        he2 = e2[:, 1] * np.exp(1j * e2[:, 2])
+        print(f"   {area*1e4:6.0f} cm^2 (Helmholtz {fh:6.1f} Hz): ngspice {np.max(np.abs(db(hs2) - db(u2))):.1e} dB, "
+              f"engine {np.max(np.abs(db(he2) - db(u2e))):.3f} dB max vs exact")
+    # a small opening: the impedance gets the vented-box double peak with its dip at the Helmholtz frequency
+    q = dict(P, open=0.002)
+    _, _, fh = opening(q)
+    fg = np.geomspace(10, 400, 4000)
+    _, zq = analytic(fg, q)
+    band = (fg > fh / 2) & (fg < fh * 2)
+    fmin = fg[band][np.argmin(np.abs(zq[band]))]
+    print(f"   20 cm^2: impedance dip at {fmin:.1f} Hz, Helmholtz formula {fh:.1f} Hz")
 
     if a.plot:
         import matplotlib

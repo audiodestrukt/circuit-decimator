@@ -91,25 +91,62 @@ struct ConeMaterial {
 };
 
 class ConeModel {
+    // 4-point Gauss-Legendre on [0, 1]
+    static constexpr double gaussX[4] = { 0.0694318442029737, 0.3300094782075719, 0.6699905217924281, 0.9305681557970263 };
+    static constexpr double gaussW[4] = { 0.1739274225687269, 0.3260725774312731, 0.3260725774312731, 0.1739274225687269 };
+
 public:
     // mesh: elements along the slope
+    // Mesh node k of `elements`: two graded segments so a node lands exactly where the
+    // dust cap is glued. Returns that node's index in capNode.
+    static void meshNode(const Cone& p, int k, int elements, double& r, double& z, int& capNode)
+    {
+        const double span = p.radius - p.coilRadius;
+        const double tc = std::clamp((p.dustCap - p.coilRadius) / span, 0.0, 1.0);
+        int n1 = (int) std::lround(elements * tc);
+        if (tc > 0 && tc < 1) n1 = std::clamp(n1, 1, elements - 1);
+        const double t = k <= n1 ? (n1 > 0 ? tc * k / n1 : 0.0) : tc + (1 - tc) * (k - n1) / (elements - n1);
+        r = p.coilRadius + t * span;
+        z = -p.depth * (1 - t) * (1 + p.curve * t);   // coneHeight's cone part
+        capNode = n1;
+    }
+
+    // The paper's mass, integrated exactly as assemble() does (same mesh, same
+    // quadrature, no allocation): the circuit's moving mass is built from it.
+    static double paperMass(const Cone& p, const ConeMaterial& m, int elements = 96)
+    {
+        double mass = 0, ra, za, rb, zb;
+        int cap;
+        const double span = std::max(1e-9, p.radius - p.coilRadius);
+        meshNode(p, 0, elements, ra, za, cap);
+        for (int e = 0; e < elements; ++e) {
+            meshNode(p, e + 1, elements, rb, zb, cap);
+            const double Le = std::hypot(rb - ra, zb - za);
+            for (int g = 0; g < 4; ++g) {
+                const double r = ra + gaussX[g] * (rb - ra);
+                const double tr = std::clamp((r - p.coilRadius) / span, 0.0, 1.0);
+                const double h = m.thickness * (m.taper + (1 - m.taper) * tr);
+                mass += m.density * h * 2 * M_PI * r * gaussW[g] * Le;
+            }
+            ra = rb;
+            za = zb;
+        }
+        return mass;
+    }
+    // everything the shell model moves as a rigid body: paper, surround, dust cap
+    static double rigidMassOf(const Cone& p, const ConeMaterial& m, int elements = 96)
+    {
+        return paperMass(p, m, elements) + m.surroundMass + m.dustCapMass;
+    }
+
     void build(const Cone& geom, const ConeMaterial& mat, int elements = 96)
     {
         p = geom;
         m = mat;
-        const double dustCapRadius = p.dustCap;
-        // two graded segments so a node lands exactly where the dust cap is glued
-        const double span = p.radius - p.coilRadius;
-        const double tc = std::clamp((dustCapRadius - p.coilRadius) / span, 0.0, 1.0);
-        int n1 = (int) std::lround(elements * tc);
-        if (tc > 0 && tc < 1) n1 = std::clamp(n1, 1, elements - 1);
         const int ne = elements, nn = ne + 1;
+        int n1 = 0;
         nodes.assign((size_t) nn, {});
-        for (int k = 0; k < nn; ++k) {
-            const double t = k <= n1 ? (n1 > 0 ? tc * k / n1 : 0.0) : tc + (1 - tc) * (k - n1) / (ne - n1);
-            const double r = p.coilRadius + t * span;
-            nodes[(size_t) k] = { r, -p.depth * (1 - t) * (1 + p.curve * t) };   // coneHeight's cone part
-        }
+        for (int k = 0; k < nn; ++k) meshNode(p, k, ne, nodes[(size_t) k].r, nodes[(size_t) k].z, n1);
         capNode = n1;
         assemble();
     }
@@ -250,8 +287,8 @@ private:
         const double Es = m.youngs, Et = m.youngs * m.anisotropy, nu = m.poisson, nuT = nu * m.anisotropy;
         const double den = 1 - nu * nuT;
         const double span = std::max(1e-9, p.radius - p.coilRadius);
-        static const double gx[4] = { 0.0694318442029737, 0.3300094782075719, 0.6699905217924281, 0.9305681557970263 };
-        static const double gw[4] = { 0.1739274225687269, 0.3260725774312731, 0.3260725774312731, 0.1739274225687269 };
+        const double* gx = gaussX;
+        const double* gw = gaussW;
         for (int e = 0; e < ne; ++e) {
             const auto& na = nodes[(size_t) e];
             const auto& nb = nodes[(size_t) e + 1];

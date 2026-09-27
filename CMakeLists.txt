@@ -114,7 +114,9 @@ target_link_libraries(cd_core INTERFACE
 target_compile_definitions(cd_core INTERFACE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_JACK=0
+    # JACK only where a target asks for it (set_target_properties(... CD_JACK ON)):
+    # Circuit Bench, so on Linux it can run on PipeWire's graph via pw-jack
+    JUCE_JACK=$<IF:$<BOOL:$<TARGET_PROPERTY:CD_JACK>>,1,0>
     JUCE_VST3_CAN_REPLACE_VST2=0)
 
 # ---- products

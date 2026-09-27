@@ -19,7 +19,10 @@
 //                                   loss Rms (N s/m) -> resistor 1/Rms
 //   node "q" (volume velocity, m^3/s): box air Cab = Vb/(rho c^2) -> inductor Cab,
 //                                   box absorption R_ab (series with Cab in the
-//                                   impedance analogy) -> resistor 1/R_ab here
+//                                   impedance analogy) -> resistor 1/R_ab here;
+//                                   then, in series (it's in parallel with the box air in
+//                                   the impedance analogy): the back opening's air plug,
+//                                   mass M_p -> capacitor M_p, radiation R_p -> resistor 1/R_p
 //
 // Mms follows the datasheet convention (it includes the air load on the cone);
 // radiation resistance is negligible for the motion at these frequencies.
@@ -44,8 +47,11 @@ struct DriverParams {
 };
 
 struct BoxParams {
-    double vb = 0.05;    // m^3 (a 1x12 closed back: ~50 l internal)
-    double qa = 20;      // absorption Q at the closed-box resonance (unfilled ~50-100, stuffed ~5-10)
+    double vb = 0.05;      // m^3 (a 1x12 closed back: ~50 l internal)
+    double qa = 20;        // absorption Q at the closed-box resonance (unfilled ~50-100, stuffed ~5-10)
+    double open = 0;       // back opening area (m^2): 0 closed back, up to the whole back panel
+    double baffle = 0.45;  // the box's front (square, m); depth follows from the volume
+    double panel = 0.018;  // back panel thickness (m)
 };
 
 inline constexpr double kRho = 1.204, kC = 343.0;   // air, 20 C
@@ -64,6 +70,29 @@ inline ThieleSmall thieleSmall(const DriverParams& d)
     t.qts = t.qes * t.qms / (t.qes + t.qms);
     t.vas = kRho * kC * kC * d.sd * d.sd * d.cms;
     return t;
+}
+
+// The back opening is a plug of air: acoustic mass rho (panel + end corrections) / S
+// (0.85 r at each flanged end), in parallel with the box air. A closed back is the
+// same circuit with the plug made (effectively) infinitely heavy.
+inline constexpr double kClosedMass = 1e6;   // kg/m^4: far above any real opening's
+inline double openingMass(const BoxParams& b)
+{
+    if (b.open <= 0) return kClosedMass;
+    const double ro = std::sqrt(b.open / M_PI);
+    return std::min(kClosedMass, kRho * (b.panel + 1.7 * ro) / b.open);
+}
+// Helmholtz resonance of the box air against the opening's plug
+inline double helmholtzHz(const BoxParams& b)
+{
+    return 1 / (2 * M_PI * std::sqrt(openingMass(b) * b.vb / (kRho * kC * kC)));
+}
+// the opening's radiation resistance for the circuit (rho w^2 / 2 pi c, a constant at
+// the Helmholtz frequency; the IR side uses the exact frequency-dependent one)
+inline double openingResistance(const BoxParams& b)
+{
+    const double w = 2 * M_PI * helmholtzHz(b);
+    return kRho * w * w / (2 * M_PI * kC);
 }
 
 // Closed box alignment (lossless box, ideal amp, Le ignored): system resonance and Q
@@ -102,8 +131,11 @@ struct SpeakerBox {
         c.idealTransformer(u, net::GND, q, net::GND, d.sd);          // cone area
         const double cab = b.vb / (kRho * kC * kC);
         const double wc = 2 * M_PI * closedBoxFc(d, b);
-        el["cab"] = c.inductor(q, net::GND, cab);
-        el["rab"] = c.resistor(q, net::GND, wc * cab * b.qa);        // 1 / R_ab, R_ab = 1 / (wc Cab Qa)
+        const int mb = n("mb");
+        el["cab"] = c.inductor(q, mb, cab);
+        el["rab"] = c.resistor(q, mb, wc * cab * b.qa);              // 1 / R_ab, R_ab = 1 / (wc Cab Qa)
+        el["mp"] = c.capacitor(mb, net::GND, openingMass(b));         // the back opening's air plug
+        el["rp"] = c.resistor(mb, net::GND, 1 / openingResistance(b));
         velocity = c.output(u);
         current = c.output(amp, vc, 1 / d.re);
     }

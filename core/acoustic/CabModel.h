@@ -27,46 +27,45 @@
 namespace cd::acoustic {
 
 enum CabParam {
-    // driver (Thiele-Small + lossy coil) and box
-    kRe, kLe, kL2, kR2, kBl, kMms, kCms, kRms, kSd, kVb, kQa,
+    // driver (Thiele-Small + lossy coil; the moving mass is built from its parts, see
+    // driverOf) and box (volume, absorption, back opening, front size)
+    kRe, kLe, kL2, kR2, kBl, kMotorMass, kCms, kRms, kVb, kQa, kOpenArea, kBaffle,
     // cone geometry
     kConeRadius, kCoilRadius, kDepth, kCurve, kDustCap, kCapHeight,
     // cone material, surround, dust cap
     kThickness, kDensity, kYoungs, kPoisson, kAniso, kRibs, kTaper, kLoss,
     kSurroundK, kSurroundKr, kSurroundR, kSurroundMass, kCapMass, kCapKr, kCapKrot,
     // microphone
-    kMicOffset, kMicDistance, kMicAngle, kMicCapsule, kMicPattern,
+    kMicOffset, kMicDistance, kMicAngle, kMicCapsule, kMicPattern, kMicModel, kMicFace,
     kNumCabParams
 };
 using CabParams = std::array<double, kNumCabParams>;
 
-// The Eminence Legend 1258 as calibrated in sim/speaker/calibrate.py (datasheet
-// T/S set; coil inductance fitted to the published impedance; cone fitted to the
-// published response), in a 50 l closed box, an SM57-ish cardioid at 2.5 cm.
-inline CabParams legend1258()
-{
-    CabParams p {};
-    p[kRe] = 7.44; p[kLe] = 0.563e-3; p[kL2] = 0.977e-3; p[kR2] = 6.84; p[kBl] = 10.9;
-    p[kMms] = 0.032; p[kCms] = 8.96e-5; p[kRms] = 3.07; p[kSd] = 0.05067;
-    p[kVb] = 0.05; p[kQa] = 20;
-    p[kConeRadius] = std::sqrt(0.05067 / M_PI); p[kCoilRadius] = 0.019;
-    p[kDepth] = 0.0599; p[kCurve] = 0.229; p[kDustCap] = 0.0525; p[kCapHeight] = 0.015;
-    p[kThickness] = 0.303e-3; p[kDensity] = 441; p[kYoungs] = 4.785e9; p[kPoisson] = 0.3;
-    p[kAniso] = 0.993; p[kRibs] = 2.22; p[kTaper] = 1.647; p[kLoss] = 0.0313;
-    p[kSurroundK] = 0.4 / 8.96e-5; p[kSurroundKr] = 3.5e5; p[kSurroundR] = 0.778; p[kSurroundMass] = 2e-3;
-    p[kCapMass] = 0.703e-3; p[kCapKr] = 5e5; p[kCapKrot] = 5.0;
-    p[kMicOffset] = 0.0; p[kMicDistance] = 0.025; p[kMicAngle] = 0.0; p[kMicCapsule] = 0.02; p[kMicPattern] = 0.5;
-    return p;
-}
+inline Cone coneOf(const CabParams& p);
+inline ConeMaterial materialOf(const CabParams& p);
 
+// the air load on both sides of the cone at low frequency (a baffled piston's mass)
+inline double airMass(double radius) { return 2 * 8 * kRho * radius * radius * radius / 3; }
+
+// Sd follows the cone's radius; Mms is built from its parts -- the voice coil and
+// former (kMotorMass), the paper, surround and dust cap (integrated from the cone's
+// geometry and material, exactly as the shell model does), and the air load -- so
+// the cone's size and paper change the driver's mass, resonance and sensitivity.
 inline DriverParams driverOf(const CabParams& p)
 {
     DriverParams d;
+    const double a = p[kConeRadius];
     d.re = p[kRe]; d.le = p[kLe]; d.l2 = p[kL2]; d.r2 = p[kR2]; d.bl = p[kBl];
-    d.mms = p[kMms]; d.cms = p[kCms]; d.rms = p[kRms]; d.sd = p[kSd];
+    d.mms = p[kMotorMass] + airMass(a) + ConeModel::rigidMassOf(coneOf(p), materialOf(p));
+    d.cms = p[kCms]; d.rms = p[kRms]; d.sd = M_PI * a * a;
     return d;
 }
-inline BoxParams boxOf(const CabParams& p) { return { p[kVb], p[kQa] }; }
+inline BoxParams boxOf(const CabParams& p)
+{
+    BoxParams b;
+    b.vb = p[kVb]; b.qa = p[kQa]; b.open = p[kOpenArea]; b.baffle = p[kBaffle];
+    return b;
+}
 inline Cone coneOf(const CabParams& p)
 {
     Cone c;
@@ -88,7 +87,31 @@ inline Mic micOf(const CabParams& p)
     Mic m;
     m.offset = p[kMicOffset]; m.distance = p[kMicDistance]; m.angle = p[kMicAngle];
     m.capsule = p[kMicCapsule]; m.pattern = p[kMicPattern];
+    m.model = (int) std::lround(p[kMicModel]); m.face = p[kMicFace];
     return m;
+}
+
+// The Eminence Legend 1258 as calibrated in sim/speaker/calibrate.py (datasheet
+// T/S set; coil inductance fitted to the published impedance; cone fitted to the
+// published response), in a 50 l closed box, a cardioid 2 cm capsule at 2.5 cm.
+inline CabParams legend1258()
+{
+    CabParams p {};
+    p[kRe] = 7.44; p[kLe] = 0.563e-3; p[kL2] = 0.977e-3; p[kR2] = 6.84; p[kBl] = 10.9;
+    p[kCms] = 8.96e-5; p[kRms] = 3.07;
+    p[kVb] = 0.05; p[kQa] = 20; p[kOpenArea] = 0; p[kBaffle] = 0.45;
+    p[kConeRadius] = std::sqrt(0.05067 / M_PI); p[kCoilRadius] = 0.019;
+    p[kDepth] = 0.0599; p[kCurve] = 0.229; p[kDustCap] = 0.0525; p[kCapHeight] = 0.015;
+    p[kThickness] = 0.303e-3; p[kDensity] = 441; p[kYoungs] = 4.785e9; p[kPoisson] = 0.3;
+    p[kAniso] = 0.993; p[kRibs] = 2.22; p[kTaper] = 1.647; p[kLoss] = 0.0313;
+    p[kSurroundK] = 0.4 / 8.96e-5; p[kSurroundKr] = 3.5e5; p[kSurroundR] = 0.778; p[kSurroundMass] = 2e-3;
+    p[kCapMass] = 0.703e-3; p[kCapKr] = 5e5; p[kCapKrot] = 5.0;
+    p[kMicOffset] = 0.0; p[kMicDistance] = 0.025; p[kMicAngle] = 0.0; p[kMicPattern] = 0.5;
+    // a dynamic cardioid as measured (MicModels.h): its pattern, response, capsule, and 32 mm face
+    p[kMicModel] = 1; p[kMicCapsule] = mics::kDynamicAperture; p[kMicFace] = mics::kDynamicFace;
+    // the datasheet's Mms (32 g, air load included) less the cone, surround, dust cap and air
+    p[kMotorMass] = 0.032 - airMass(p[kConeRadius]) - ConeModel::rigidMassOf(coneOf(p), materialOf(p));
+    return p;
 }
 
 // What a view shows (Bench / product UI): the response at the mic and the cone's
@@ -99,6 +122,8 @@ struct CabDisplay {
     std::vector<double> shapeFreq;               // frequencies the shapes are given at
     std::vector<std::vector<std::complex<double>>> shape;   // per freq: T at each node, then the dust cap
     CabParams params {};                         // what it was built from
+    BoxParams box;                               // the box as built
+    double mms = 0;                              // the driver's moving mass as built (kg)
 };
 
 // ---- the IR, stage-cached -----------------------------------------------------------
@@ -120,7 +145,7 @@ public:
         const ConeMaterial mat = materialOf(p);
         const bool gridChanged = std::abs(fsB - lastFs) > 0 || nB != lastN;
         const bool geomChanged = gridChanged || !same(p, lastP, kConeRadius, kCapHeight);
-        const bool micChanged = geomChanged || !same(p, lastP, kMicOffset, kMicPattern);
+        const bool micChanged = geomChanged || !same(p, lastP, kMicOffset, kMicFace);
         const bool matChanged = geomChanged || !same(p, lastP, kThickness, kCapKrot);
         if (micChanged || !haveRings) {
             rings = acoustic::rings(cone, micOf(p), fsB, nB, fmax);
@@ -131,8 +156,12 @@ public:
             ct = coneTransfer(model, rings.radius, fsB, nB, fmax);
             haveCone = true;
         }
-        const auto vc = velocityCorrection(driverOf(p), boxOf(p), kRAmp, ct, mat, cone.radius, fsB, nB);
-        const auto r = combine(rings, &ct, &vc);
+        const auto cdrv = coupledDriver(driverOf(p), boxOf(p), kRAmp, ct, mat, cone.radius, fsB, nB);
+        const auto vc = velocityCorrection(cdrv);
+        RadiationIR r;
+        r.spectrum = combine(rings, &ct, nullptr).spectrum;   // the front, per unit coil velocity
+        addRearWave(r.spectrum, p, cdrv, fsB, nB, fmax);        // an open back's rear wave
+        for (size_t b = 0; b < r.spectrum.size(); ++b) r.spectrum[b] *= vc[b];
         lastSpectrum = r.spectrum;
         lastFsB = fsB;
         lastP = p;
@@ -149,6 +178,42 @@ public:
         return ir;
     }
 
+    // An open back: the air the cone's rear pushes out of the opening reaches the mic
+    // round the cabinet -- across the back to its edge, along the side, then from the
+    // front edge to the mic -- inverted and delayed. The opening is a small monopole;
+    // the mic picks it up by its pattern for the direction it arrives from (the front
+    // edge). Diffraction round the box: full strength while the box is small against
+    // the wavelength, falling as 1/f above that (an approximation for the IR tuning
+    // loop to refine). The finite front baffle's own edge (baffle step) isn't modelled.
+    void addRearWave(std::vector<std::complex<double>>& spec, const CabParams& p, const CoupledDriver& cdrv,
+                     double fsB, size_t nB, double fmax) const
+    {
+        const auto box = boxOf(p);
+        if (box.open <= 0 || rings.radius.empty()) return;
+        const double b = box.baffle, depth = box.vb / (b * b), ro = std::sqrt(box.open / M_PI);
+        const double off = std::abs(p[kMicOffset]), dist = p[kMicDistance], ang = p[kMicAngle];
+        const double legBack = std::max(0.0, b / 2 - ro), legSide = depth;
+        const double dz = -dist, dr = b / 2 - off;                  // mic -> the front edge on its side
+        const double r3 = std::max(1e-3, std::hypot(dz, dr));
+        const double L = legBack + legSide + r3;
+        const double ax = -std::cos(ang), ar = -std::sin(ang) * (p[kMicOffset] < 0 ? -1.0 : 1.0);
+        const double cosPsi = (ax * dz + ar * dr) / r3;
+        const double alpha = std::clamp(p[kMicPattern], 0.0, 1.0);
+        const double dring = 2 * rings.radius[0];                   // rings are uniform in radius
+        const double t0 = std::min(0.42 * fsB, fmax), t1 = std::min(0.5 * fsB, std::max(0.42 * fsB + 1, fmax * 1.05));
+        for (size_t k = 1; k < spec.size(); ++k) {
+            const double f = fsB * (double) k / (double) nB, w = 2 * M_PI * f, kw = w / kC;
+            if (f > t1) break;
+            std::complex<double> ucone = 0;                         // the cone's rear volume velocity per coil velocity
+            for (size_t j = 0; j < rings.radius.size(); ++j) ucone += ct.T[j][k] * (2 * M_PI * rings.radius[j] * dring);
+            const auto uout = -ucone * cdrv.rearFraction[k];
+            const std::complex<double> g = alpha + (1 - alpha) * cosPsi * (1.0 + 1.0 / std::complex<double>(0, kw * r3));
+            const double diffraction = 1 / (1 + kw * b / M_PI);
+            const double taper = f <= t0 ? 1.0 : 0.5 * (1 + std::cos(M_PI * std::min(1.0, (f - t0) / std::max(1.0, t1 - t0))));
+            spec[k] += std::complex<double>(0, w) * kRho / (4 * M_PI * L) * std::polar(1.0, -kw * L) * diffraction * g * uout * taper;
+        }
+    }
+
     // the display data for the last build()
     void display(const CabParams& p, CabDisplay& d) const
     {
@@ -157,6 +222,8 @@ public:
         if (nb < 2) return;
         const size_t nB = (nb - 1) * 2;
         const auto cdrv = coupledDriver(driverOf(p), boxOf(p), kRAmp, ct, materialOf(p), p[kConeRadius], lastFsB, nB);
+        d.box = boxOf(p);
+        d.mms = driverOf(p).mms;
         d.freq.clear();
         d.spl.clear();
         for (double f = 40; f <= std::min(16000.0, 0.45 * lastFsB); f *= 1.02) {
@@ -249,7 +316,7 @@ public:
         if (!(std::abs(s.load(std::memory_order_relaxed) - value) > 0)) return;
         s.store(value, std::memory_order_relaxed);
         params[(size_t) index] = value;
-        if (index <= kQa) circuitDirty = true;
+        if (index < kMicOffset) circuitDirty = true;   // the driver's mass follows the cone
         requestedGen.fetch_add(1, std::memory_order_release);
     }
     double get(int index) const { return params[(size_t) index]; }

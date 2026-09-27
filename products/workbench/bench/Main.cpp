@@ -77,6 +77,7 @@ private:
 class Bench : public juce::Component,
               public juce::AudioIODeviceCallback,
               public juce::FileDragAndDropTarget,
+              private juce::ChangeListener,
               private juce::Timer {
 public:
     explicit Bench(const juce::String& commandLine)
@@ -148,8 +149,15 @@ public:
         };
         searchButton.onClick = [this] { chooseSearch(); };
 
-        const auto err = deviceManager.initialiseWithDefaultDevices(2, 2);
+        // ask for 48 kHz: a device's own default can be an odd rate (PipeWire's ALSA
+        // "default" offers 64 kHz and friends), and a rate that disagrees with what the
+        // hardware really runs at plays back pitch-shifted
+        juce::AudioDeviceManager::AudioDeviceSetup want;
+        want.sampleRate = 48000;
+        const auto err = deviceManager.initialise(2, 2, nullptr, true, {}, &want);
         if (err.isNotEmpty()) statsLabel.setText("audio: " + err, juce::dontSendNotification);
+        deviceManager.addChangeListener(this);
+        keepStandardRate();
         deviceManager.addAudioCallback(this);
 
         // args: an audio file to loop and/or a search run's elites.json
@@ -180,6 +188,7 @@ public:
 
     ~Bench() override
     {
+        deviceManager.removeChangeListener(this);
         deviceManager.removeAudioCallback(this);
         transport.setSource(nullptr);
         editor.reset();
@@ -235,6 +244,7 @@ public:
     {
         const double sr = device->getCurrentSampleRate();
         const int bs = device->getCurrentBufferSizeSamples();
+        sampleRate = sr;
         work.setSize(2, bs);
         transport.prepareToPlay(bs, sr);
         processor.setPlayConfigDetails(2, 2, sr, bs);
@@ -247,12 +257,36 @@ public:
     {
         work.setSize(2, n, false, false, true);
         if (liveInput) {
-            for (int c = 0; c < 2; ++c) {
-                if (numIn > 0 && in[juce::jmin(c, numIn - 1)] != nullptr)
-                    work.copyFrom(c, 0, in[juce::jmin(c, numIn - 1)], n);
-                else
-                    work.clear(c, 0, n);
+            // One input channel, not a sum: devices often present a mono input as two
+            // identical channels, and summing those doubles the level (clipping in
+            // bypass) or comb-filters. Use whichever channel carries the signal, e.g. a
+            // guitar in input 2 with input 1 silent, switching only when another channel
+            // has been clearly (6 dB) louder for about half a second.
+            const int nc = juce::jmin(numIn, (int) chanLevel.size());
+            for (int c = 0; c < nc; ++c) {
+                float pk = 0;
+                if (in[c] != nullptr)
+                    for (int i = 0; i < n; ++i) pk = juce::jmax(pk, std::abs(in[c][i]));
+                chanLevel[(size_t) c] = juce::jmax(pk, chanLevel[(size_t) c] * 0.95f);
             }
+            if (liveChannel >= nc) liveChannel = 0;
+            int loudest = liveChannel;
+            for (int c = 0; c < nc; ++c)
+                if (chanLevel[(size_t) c] > 2.0f * chanLevel[(size_t) loudest]) loudest = c;
+            if (loudest != liveChannel) {
+                switchSamples += n;
+                if (switchSamples > (int) (0.5 * sampleRate)) { liveChannel = loudest; switchSamples = 0; }
+            } else {
+                switchSamples = 0;
+            }
+            if (nc > 0 && in[liveChannel] != nullptr) work.copyFrom(0, 0, in[liveChannel], n);
+            else work.clear(0, 0, n);
+            float peak = 0;
+            for (int i = 0; i < n; ++i) peak = juce::jmax(peak, std::abs(work.getSample(0, i)));
+            inputPeak = juce::jmax(peak, inputPeak.load() * 0.9f);
+            activeInputs = numIn;
+            usedInput = liveChannel;
+            work.copyFrom(1, 0, work, 0, 0, n);
         } else {
             juce::AudioSourceChannelInfo info(&work, 0, n);
             transport.getNextAudioBlock(info);
@@ -405,6 +439,27 @@ private:
         o.launchAsync();
     }
 
+    // After any device change: if the device landed on a non-standard rate, move it
+    // to 48 kHz (or 44.1 kHz, or the nearest standard rate it offers).
+    void changeListenerCallback(juce::ChangeBroadcaster*) override { keepStandardRate(); }
+    void keepStandardRate()
+    {
+        auto* dev = deviceManager.getCurrentAudioDevice();
+        if (dev == nullptr) return;
+        const double sr = dev->getCurrentSampleRate();
+        const double standard[] = { 48000, 44100, 96000, 88200, 192000, 176400 };
+        for (double r : standard)
+            if (std::abs(sr - r) < 1) return;
+        const auto rates = dev->getAvailableSampleRates();
+        for (double r : standard)
+            if (rates.contains(r)) {
+                auto setup = deviceManager.getAudioDeviceSetup();
+                setup.sampleRate = r;
+                deviceManager.setAudioDeviceSetup(setup, true);
+                return;
+            }
+    }
+
     void updatePlayButton() { playButton.setButtonText(transport.isPlaying() ? "Stop" : "Play"); }
 
     void timerCallback() override
@@ -413,7 +468,23 @@ private:
         const float newton = mode == 0 ? processor.engine.newtonAverage.load() : net.newtonAverage.load();
         const int newtonMax = mode == 0 ? processor.engine.newtonMax.load() : 0;
         const long fails = mode == 0 ? processor.engine.solverFailures.load() : net.failures.load();
-        statsLabel.setText((mode == 0 && searchLabel.isNotEmpty() ? searchLabel + "   |   " : juce::String())
+        juce::String live;
+        if (liveInput) {
+            const float pk = inputPeak.load();
+            live = "input " + juce::String(usedInput.load() + 1) + " of " + juce::String(activeInputs.load()) + ": "
+                   + (pk > 1e-5f ? juce::String(20 * std::log10(pk), 1) + " dBFS" : juce::String("silent")) + "   |   ";
+            inputPeak = pk * 0.5f;
+        }
+        juce::String dev;
+        if (auto* d = deviceManager.getCurrentAudioDevice()) {
+            const auto setup = deviceManager.getAudioDeviceSetup();
+            const int xruns = d->getXRunCount();
+            dev = d->getTypeName() + " " + juce::String(d->getCurrentSampleRate() / 1000, 1) + " kHz, "
+                  + juce::String(d->getCurrentBufferSizeSamples()) + " smp"
+                  + (xruns >= 0 ? ", dropouts " + juce::String(xruns) : juce::String()) + " (in: " + (setup.inputDeviceName.isEmpty() ? juce::String("none") : setup.inputDeviceName)
+                  + ", out: " + setup.outputDeviceName + ")   |   ";
+        }
+        statsLabel.setText(dev + live + (mode == 0 && searchLabel.isNotEmpty() ? searchLabel + "   |   " : juce::String())
                                + juce::String::formatted("CPU %.1f%%   Newton avg %.2f%s   solver failures %ld",
                                                          deviceManager.getCpuUsage() * 100.0, newton,
                                                          mode == 0 ? juce::String::formatted(" / max %d", newtonMax).toRawUTF8() : "",
@@ -434,6 +505,11 @@ private:
     juce::AudioBuffer<float> work;
     juce::MidiBuffer midi;
     std::atomic<bool> liveInput { false }, bypass { false }, muted { false };
+    std::atomic<float> inputPeak { 0 };   // live input, for the stats line
+    std::atomic<int> activeInputs { 0 }, usedInput { 0 };
+    std::array<float, 32> chanLevel {};    // audio thread: decaying peak per input channel
+    int liveChannel = 0, switchSamples = 0;
+    double sampleRate = 48000;
 
     juce::TextButton openButton { "Open..." }, playButton { "Play" }, bypassButton { "Bypass" },
         resetButton { "Power cycle" }, audioButton { "Audio..." }, searchButton { "Load search..." };
