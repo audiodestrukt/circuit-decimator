@@ -42,10 +42,11 @@ public:
         dcBlock.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 10.0f);
         oversampling.reset();
         dcBlock.reset();
-        if (current) current->prepare(osRate());
+        if (current) current->prepare(rateFor(*current));
     }
 
-    double osRate() const { return fs * 4; }
+    // the rate a circuit runs at: the host rate times its own oversampling
+    double rateFor(const cd::catalog::BenchCircuit& c) const { return fs * (1 << c.oversamplingLog2()); }
 
     // what the UI shows for the selected circuit (UI thread only)
     std::vector<cd::catalog::Control> uiControls;
@@ -74,7 +75,7 @@ public:
             v[k] = ctl[k].knob.def;
             values[k] = ctl[k].knob.def;
         }
-        c->prepare(osRate());   // allocate + DC point first; apply() rebuilds matrices
+        c->prepare(rateFor(*c));   // allocate + DC point first; apply() rebuilds matrices
         c->apply(v.data());
         delete pending.exchange(c.release());
     }
@@ -107,7 +108,9 @@ public:
                 mono.setSample(0, i, s / (float) juce::jmax(1, nc));
             }
             juce::dsp::AudioBlock<float> ab(mono);
-            auto up = oversampling.processSamplesUp(ab);
+            // 4x for nonlinear circuits; a linear one (the speaker cab) at the host rate
+            const bool os = current->oversamplingLog2() > 0;
+            auto up = os ? oversampling.processSamplesUp(ab) : ab;
             float* x = up.getChannelPointer(0);
             const int nUp = (int) up.getNumSamples();
             const auto& prb = current->probes();
@@ -141,7 +144,7 @@ public:
             newtonAverage = (float) iters / (float) juce::jmax(1, nUp);
             failures = current->failureCount();
             gainReduction = (float) current->gainReductionDb();
-            oversampling.processSamplesDown(ab);
+            if (os) oversampling.processSamplesDown(ab);
             for (int i = 0; i < len; ++i) {
                 float y = dcBlock.processSample(mono.getSample(0, i));
                 if (!std::isfinite(y)) y = 0;

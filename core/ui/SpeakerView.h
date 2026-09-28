@@ -55,6 +55,7 @@ private:
     acoustic::CabDisplay disp;
     unsigned seenVersion = ~0u;
     double cursorHz = 2300, phase = 0;
+    float excursion = 0, coilRise = 0;
     juce::Rectangle<float> plotArea;
 
     const juce::Colour bg { 0xff1b1c1e }, dim { 0xff8a8f98 }, fg { 0xffc9ccd1 }, accent { 0xfff2b27a };
@@ -65,6 +66,8 @@ private:
         const auto* cab = cabSource ? cabSource() : nullptr;
         if (!cab) return;
         p = cab->paramsSnapshot();
+        excursion = cab->excursionMm.load();
+        coilRise = cab->coilRiseK.load();
         if (cab->displayVersion() != seenVersion) {
             seenVersion = cab->displayVersion();
             disp = cab->display();
@@ -346,6 +349,13 @@ private:
         label(g, juce::String(p[kConeRadius] / 0.01058, 1) + "\" speaker, moving mass " + juce::String(disp.mms * 1e3, 1)
                      + " g (coil + former " + juce::String(p[kMotorMass] * 1e3, 1) + " g, the rest cone, cap, surround, air)",
               { area.getX() + 4, area.getY() + 34 });
+        {
+            juce::String ls = "cone excursion " + juce::String(excursion, 2) + " mm (Xmax " + juce::String(p[kXmax] * 1e3, 2) + ")";
+            if (p[kNonlinear] < 0.5) ls << ", motor linear";
+            if (p[kHeating] > 0.5) ls << ";  voice coil +" + juce::String(juce::roundToInt(coilRise)) + " C";
+            g.setColour(excursion > p[kXmax] * 1e3 ? accent : fg);
+            label(g, ls, { area.getX() + 4, area.getY() + 50 });
+        }
         label(g, "dust cap " + juce::String(p[kDustCap] * 200, 1) + " cm across, " + juce::String(p[kCapMass] * 1e3, 2) + " g;  Bl "
                      + juce::String(p[kBl], 1) + " T m;  surround damping " + juce::String(p[kSurroundR], 2),
               { area.getX() + 4, area.getY() + 18 });

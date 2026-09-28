@@ -60,6 +60,9 @@ public:
     virtual double gainReductionDb() const { return NAN; }
     // the speaker cab model, for circuits that are one (views read it on the UI thread)
     virtual const acoustic::Cab* cabModel() const { return nullptr; }
+    // oversampling the Bench runs this circuit at, as a power of 2: nonlinear circuits
+    // need it against aliasing (4x); a linear one doesn't
+    virtual int oversamplingLog2() const { return 2; }
 
     void apply(const double* v)
     {
@@ -533,6 +536,12 @@ public:
         add(kMotorMass, "motor", "Coil + former mass", 1, 30, 6, 1e-3, "g", 2, g);
         add(kCms, "cms", "Cms", 0.02, 0.5, 0.1, 1e-3, "mm/N", 4, g);
         add(kRms, "rms", "Rms", 0.5, 10, 3, 1, "N s/m", 2, g);
+        g = "Large signal";
+        add(kNonlinear, "nl", "Motor nonlinear (1 / 0)", 0, 1, 0, 1, "", 0, g);
+        add(kXmax, "xmax", "Xmax (coil overhang)", 0.1, 5, 1, 1e-3, "mm", 2, g);
+        add(kGap, "gap", "Gap height", 3, 20, 8, 1e-3, "mm", 1, g);
+        add(kSuspension, "xs", "Suspension limit", 0.5, 10, 2.5, 1e-3, "mm", 2, g);
+        add(kHeating, "heat", "Coil heating (1 / 0)", 0, 1, 0, 1, "", 0, g);
         g = "Box";
         add(kVb, "vb", "Volume", 10, 200, 50, 1e-3, "l", 0, g);
         add(kQa, "qa", "Absorption Q", 2, 100, 20, 1, "", 1, g);
@@ -555,6 +564,7 @@ public:
     }
     void warmStart() override { cab.circuit().warmStart(); }
     const acoustic::Cab* cabModel() const override { return &cab; }
+    int oversamplingLog2() const override { return 0; }   // linear: host rate, like the plugin
     double process(double x) override { return cab.process(x * inVolts) / (nominalGain * inVoltsDefault) * outGain; }
 
 protected:

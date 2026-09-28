@@ -13,7 +13,7 @@ enum KnobIndex {
     kSize, kPaper, kWeight, kDepth, kDustCap, kDamping,       // speaker
     kVolume, kOpening,                                        // cabinet
     kMicPos, kMicDist, kMicAngle, kMicType,                   // mic
-    kAutoLevel, kLevel, kMix,                                 // output
+    kPower, kHeating, kAutoLevel, kLevel, kMix,              // drive, output
     kNumKnobs
 };
 
@@ -30,6 +30,8 @@ inline constexpr cd::Knob kKnobs[kNumKnobs] = {
     { "micdist", "Mic Distance", 0.5, 60, 5, 2.5, "cm", 1, true },
     { "micangle", "Mic Angle", 0, 60, 0, 0, "deg", 0, true },
     { "mictype", "Mic", 0, 2, 0, 0, "", 0, false },          // 0 dynamic (measured), 1 cardioid, 2 omni
+    { "power", "Power", 1, 100, 15, 25, "W", 0, true },        // full scale into 8 ohm: drives the motor's nonlinearity
+    { "heating", "Coil Heating", 0, 1, 0, 1, "", 0, false },
     { "autolevel", "Auto Level", 0, 1, 0, 1, "", 0, false },
     { "level", "Level", -24, 24, -24, 0, "dB", 1, false },
     { "mix", "Mix", 0, 100, 0, 100, "%", 0, false },
@@ -37,8 +39,9 @@ inline constexpr cd::Knob kKnobs[kNumKnobs] = {
 
 inline constexpr const char* kMicNames[] = { "Dynamic (measured)", "Ideal cardioid", "Ideal omni" };
 
-// Digital full scale = this many volts at the speaker's terminals (~25 W peak into 8 ohm).
-inline constexpr double kAmpVolts = 20.0;
+// Digital full scale = this many volts at the speaker's terminals: the Power knob,
+// as the peak of a sine of that power into 8 ohm (25 W -> 20 V).
+inline double ampVolts(const double* v) { return std::sqrt(2 * v[kPower] * 8); }
 
 // Knobs -> the cab model's parameters (SI units), handed to `set(index, value)`.
 template <typename Set>
@@ -60,6 +63,7 @@ inline void applyKnobs(const double* v, Set&& set)
     set(a::kMicModel, mic == 0 ? 1.0 : 0.0);
     set(a::kMicPattern, mic == 2 ? 1.0 : 0.5);
     set(a::kMicFace, mic == 0 ? a::mics::kDynamicFace : 0.0);   // the measured mic's body reflects
+    set(a::kHeating, v[kHeating] > 0.5 ? 1.0 : 0.0);
 }
 
 } // namespace cone

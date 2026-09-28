@@ -55,3 +55,16 @@ if(CD_BUILD_TOOLS)
             juce::juce_recommended_config_flags
             juce::juce_recommended_warning_flags)
 endif()
+
+if(CD_BUILD_TOOLS)
+    # The Bench's audio-callback CPU load for a netlist circuit, idle and with knobs moving.
+    juce_add_console_app(bench_cpu PRODUCT_NAME "bench_cpu")
+    target_sources(bench_cpu PRIVATE tools/bench_cpu.cpp)
+    target_include_directories(bench_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(bench_cpu PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(bench_cpu
+        PRIVATE cd_core
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
+endif()

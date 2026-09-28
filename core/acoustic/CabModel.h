@@ -30,6 +30,8 @@ enum CabParam {
     // driver (Thiele-Small + lossy coil; the moving mass is built from its parts, see
     // driverOf) and box (volume, absorption, back opening, front size)
     kRe, kLe, kL2, kR2, kBl, kMotorMass, kCms, kRms, kVb, kQa, kOpenArea, kBaffle,
+    // large signal (net::SpeakerMotor): motor/suspension nonlinearity, coil heating
+    kNonlinear, kXmax, kGap, kSuspension, kHeating,
     // cone geometry
     kConeRadius, kCoilRadius, kDepth, kCurve, kDustCap, kCapHeight,
     // cone material, surround, dust cap
@@ -58,6 +60,8 @@ inline DriverParams driverOf(const CabParams& p)
     d.re = p[kRe]; d.le = p[kLe]; d.l2 = p[kL2]; d.r2 = p[kR2]; d.bl = p[kBl];
     d.mms = p[kMotorMass] + airMass(a) + ConeModel::rigidMassOf(coneOf(p), materialOf(p));
     d.cms = p[kCms]; d.rms = p[kRms]; d.sd = M_PI * a * a;
+    d.nonlinear = p[kNonlinear] > 0.5; d.xmax = p[kXmax]; d.gap = p[kGap]; d.xs = p[kSuspension];
+    d.heating = p[kHeating] > 0.5;
     return d;
 }
 inline BoxParams boxOf(const CabParams& p)
@@ -100,6 +104,8 @@ inline CabParams legend1258()
     p[kRe] = 7.44; p[kLe] = 0.563e-3; p[kL2] = 0.977e-3; p[kR2] = 6.84; p[kBl] = 10.9;
     p[kCms] = 8.96e-5; p[kRms] = 3.07;
     p[kVb] = 0.05; p[kQa] = 20; p[kOpenArea] = 0; p[kBaffle] = 0.45;
+    // large signal: gap height and Xmax from the datasheet; the suspension limit is a guess
+    p[kNonlinear] = 1; p[kXmax] = 0.48e-3; p[kGap] = 7.9e-3; p[kSuspension] = 2.5e-3; p[kHeating] = 1;
     p[kConeRadius] = std::sqrt(0.05067 / M_PI); p[kCoilRadius] = 0.019;
     p[kDepth] = 0.0599; p[kCurve] = 0.229; p[kDustCap] = 0.0525; p[kCapHeight] = 0.015;
     p[kThickness] = 0.303e-3; p[kDensity] = 441; p[kYoungs] = 4.785e9; p[kPoisson] = 0.3;
@@ -340,22 +346,32 @@ public:
     ~Cab() { release(); }
 
     // fs: the rate process() runs at. irSeconds: IR length (rounded up to a power of 2 samples).
-    void prepare(double sampleRate, double irSeconds = 0.045, size_t block = 64)
+    // The convolution block grows with the rate (64 at 48 kHz: ~1.3 ms latency at any
+    // rate), and the IR is trimmed to irSeconds rather than its power-of-2 FFT length,
+    // so the per-sample cost stays flat and the cost per second grows only linearly
+    // with the sample rate.
+    void prepare(double sampleRate, double irSeconds = 0.045, size_t block = 0)
     {
         stop();
         fs = sampleRate;
         n = 1;
         while ((double) n < irSeconds * fs) n <<= 1;
+        if (block == 0) {
+            block = 64;
+            while ((double) block * 1.5 < 64 * fs / 48000) block <<= 1;
+        }
         blockSize = block;
-        conv.prepare(block, n / block);
+        irLength = std::min(n, (size_t) std::ceil(irSeconds * fs / (double) block) * block);
+        conv.prepare(block, irLength / block);
         speaker = SpeakerBox {};
         speaker.build(driverOf(params), boxOf(params));
         speaker.c.prepare(fs);
+        excursionDecay = std::exp(-1.0 / (0.5 * fs));
         // first IR now, so audio starts with the right sound
         std::vector<IRSpectra*> held;
         conv.takeAll(held);
         for (auto* h : held) delete h;
-        conv.setIR(IRSpectra::make(builder.build(params, fs, n), block).release());
+        conv.setIR(IRSpectra::make(trimmed(builder.build(params, fs, n)), block).release());
         builtGen = requestedGen.load();
         publishDisplay(params);
         running = true;
@@ -416,10 +432,21 @@ public:
         speaker.c.setInput(speaker.input, volts);
         speaker.c.process();
         lastVelocity = speaker.c.out(speaker.velocity);
+        // telemetry: peak excursion (held and decaying ~ 0.5 s), coil temperature rise
+        const double ax = std::abs(speaker.motor->displacement());
+        excursionHold = std::max(ax, excursionHold * excursionDecay);
+        if (++heatCount >= kHeatEvery) {   // coil heating: Re follows, ~5 ms steps at 48 kHz
+            heatCount = 0;
+            speaker.heatStep((double) kHeatEvery / fs);
+            excursionMm = (float) (excursionHold * 1e3);
+            coilRiseK = (float) speaker.coilRise;
+        }
         return conv.process(lastVelocity);
     }
 
     double coilVelocity() const { return lastVelocity; }
+    // for views: the cone's peak excursion (held, mm) and the voice coil's temperature rise (K)
+    std::atomic<float> excursionMm { 0 }, coilRiseK { 0 };
     net::Circuit& circuit() { return speaker.c; }
     int latency() const { return (int) blockSize; }
     std::atomic<int> rebuilds { 0 };
@@ -431,8 +458,19 @@ private:
     std::atomic<unsigned> requestedGen { 0 };
     unsigned builtGen = 0;
     bool circuitDirty = false;
-    double fs = 192000, lastVelocity = 0;
-    size_t n = 8192, blockSize = 64;
+    double fs = 192000, lastVelocity = 0, excursionHold = 0, excursionDecay = 0.9999;
+    static constexpr int kHeatEvery = 256;
+    int heatCount = 0;
+    size_t n = 8192, blockSize = 64, irLength = 8192;
+
+    // the IR cut to irLength, its last 10 % faded out (the cab has long decayed by then)
+    std::vector<double> trimmed(std::vector<double> ir) const
+    {
+        ir.resize(irLength);
+        const size_t fade = std::max<size_t>(1, irLength / 10);
+        for (size_t i = 0; i < fade; ++i) ir[irLength - fade + i] *= 0.5 * (1 + std::cos(M_PI * (double) (i + 1) / (double) fade));
+        return ir;
+    }
     SpeakerBox speaker;
     Convolver conv;
     CabIRBuilder builder;
@@ -466,7 +504,7 @@ private:
                 CabParams p;
                 for (int i = 0; i < kNumCabParams; ++i) p[(size_t) i] = shared[(size_t) i].load(std::memory_order_relaxed);
                 const auto t0 = std::chrono::steady_clock::now();
-                auto s = IRSpectra::make(builder.build(p, fs, n), blockSize);
+                auto s = IRSpectra::make(trimmed(builder.build(p, fs, n)), blockSize);
                 lastBuildMs = (float) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 delete pending.exchange(s.release(), std::memory_order_acq_rel);   // an unclaimed older one goes
                 builtGen = g;

@@ -7,6 +7,8 @@
 // Port conventions (see Circuit.h Port): list ports in the order given here.
 #pragma once
 
+#include <array>
+
 #include "Circuit.h"
 #include "FuzzFace.h"
 
@@ -350,6 +352,119 @@ private:
         i = current(BN, MN);
         di = ((1 / mu0 - slope) * le + lg / mu0) * (0.5 * dt / (np * ac)) / np;
         if (into) { lam = lamN; B = BN; M = MN; vPrev = v; }
+    }
+};
+
+// Loudspeaker motor and suspension nonlinearity, and the voice coil's heating, as
+// corrections to a linear driver circuit (circuits/Speaker.h: mobility analogy,
+// the motor an ideal transformer of ratio 1/Bl0, the suspension an inductor 1/k0,
+// the coil resistance a resistor re0). Four ports:
+//   0: control v(amp, vc) (across Re); current into the velocity node u: the
+//      extra force (Bl(x) - Bl0) v / Re
+//   1: control v(u) = velocity; current vc -> amp: the extra back-EMF
+//      (Bl(x) - Bl0) u as its Norton equivalent across Re
+//   2: control v(u); current u -> ground: the rest of the extra force (the coil
+//      current is v/Re less the back-EMF correction's share) and the suspension's
+//      stiffening, k0 x^3 / Xs^2 (stiffness k0 (1 + (x/Xs)^2))
+//   3: control v(amp, vc); current amp -> vc: the hot coil, (1/Re - 1/re0) v, so
+//      the Re branch conducts v / Re with Re = re0 (1 + 0.393 %/K dT) (no rebuild)
+// Within a sample every term uses the last committed displacement x (the motor
+// moves slowly against the sample rate): the device is linear within a sample,
+// so the engine solves it in one step. Bl(x) is the overlap of the coil (height
+// gap + 2 Xmax: overhung) with the gap's field (flat, with tanh fringing of width
+// `fringe`), normalised to Bl0 at rest. Disabled, with the coil cold: exactly the
+// linear circuit.
+struct SpeakerMotor : Device {
+    double re0 = 7.44, re = 7.44, bl0 = 10.9, k0 = 1 / 8.96e-5;   // set from the driver (Speaker.h)
+    double gap = 7.9e-3, xmax = 0.48e-3, fringe = 1e-3, xs = 2.5e-3;
+    bool enabled = true;
+    static std::vector<Port> ports(int amp, int vc, int u)
+    {
+        return { { amp, vc, GND, u }, { u, GND, vc, amp }, { u, GND, u, GND }, { amp, vc, amp, vc } };
+    }
+
+    int numPorts() const override { return 4; }
+    bool linearWithinSample() const override { return true; }
+    void setTimestep(double t) override { dt = t; }
+    void reset() override { x = 0; power = 0; samples = 0; ratio = 1; }
+
+    // Bl(x) / Bl0, from the geometry (exact; the per-sample path uses the table below)
+    double blRatio(double pos) const
+    {
+        const double a = 0.5 * gap, c = a + xmax;
+        return overlap(pos, a, c) / overlap(0, a, c);
+    }
+    // Bl(x) / Bl0 by table: rebuilt when the geometry changes, linear interpolation
+    // over +-kSpan (beyond it, the end values: the coil is out of the gap by then)
+    double blTable(double pos)
+    {
+        if (std::abs(gap - tGap) > 0 || std::abs(xmax - tXmax) > 0 || std::abs(fringe - tFringe) > 0) {
+            for (int k = 0; k < kTable; ++k) table[(size_t) k] = blRatio(-kSpan + 2 * kSpan * k / (kTable - 1));
+            tGap = gap; tXmax = xmax; tFringe = fringe;
+        }
+        const double u = std::clamp((pos + kSpan) / (2 * kSpan) * (kTable - 1), 0.0, (double) (kTable - 1) - 1e-9);
+        const int k = (int) u;
+        return table[(size_t) k] + (u - k) * (table[(size_t) k + 1] - table[(size_t) k]);
+    }
+
+    void eval(const double* v, double* i, double* J) override
+    {
+        for (int k = 0; k < 16; ++k) J[k] = 0;
+        const double gh = 1 / re - 1 / re0;                  // the hot coil
+        i[3] = gh * v[3];
+        J[15] = gh;
+        if (!enabled) { i[0] = i[1] = i[2] = 0; return; }
+        const double dbl = bl0 * (ratio - 1);               // Bl(x) - Bl0 at the committed x
+        const double g = dbl / re;
+        i[0] = g * v[0];
+        J[0] = g;
+        i[1] = g * v[1];
+        J[5] = g;
+        const double sus = xs > 0 ? k0 * x * x * x / (xs * xs) : 0.0;
+        i[2] = g * dbl * v[2] + sus;
+        J[10] = g * dbl;
+    }
+    void evalDC(const double*, double* i, double* J) override
+    {
+        for (int k = 0; k < 16; ++k) J[k] = 0;
+        i[0] = i[1] = i[2] = i[3] = 0;
+    }
+    void commit(const double* v) override
+    {
+        const double dbl = enabled ? bl0 * (ratio - 1) : 0.0;
+        const double icoil = (v[0] - dbl * v[1]) / re;
+        power += icoil * icoil * re;                         // for the coil's heating (averaged by the owner)
+        ++samples;
+        x += dt * v[2];                                      // displacement from the velocity
+        ratio = enabled ? blTable(x) : 1.0;                  // Bl(x) for the next sample
+    }
+
+    double displacement() const { return x; }
+    // mean electrical power in the coil since the last call (W)
+    double takePower()
+    {
+        const double p = samples ? power / (double) samples : 0.0;
+        power = 0;
+        samples = 0;
+        return p;
+    }
+
+private:
+    static constexpr int kTable = 2049;
+    static constexpr double kSpan = 0.012;                  // m
+    std::array<double, kTable> table {};
+    double tGap = -1, tXmax = -1, tFringe = -1;
+    double dt = 1.0 / 48000, x = 0, power = 0, ratio = 1;
+    long samples = 0;
+
+    // integral of the gap field (tanh edges at +-a, width fringe) over the coil [pos - c, pos + c]
+    double overlap(double pos, double a, double c) const
+    {
+        auto G = [&](double u) {   // integral of tanh(u / f): f ln cosh(u / f), overflow-safe
+            const double t = std::abs(u) / fringe;
+            return fringe * (t + std::log1p(std::exp(-2 * t)) - std::log(2.0));
+        };
+        return 0.5 * (G(pos + c + a) - G(pos - c + a) - G(pos + c - a) + G(pos - c - a));
     }
 };
 

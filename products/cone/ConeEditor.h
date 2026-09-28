@@ -23,6 +23,7 @@ public:
             addKnob(k, ramp);
         for (int k : { cone::kVolume, cone::kOpening }) addKnob(k, ramp);
         for (int k : { cone::kMicPos, cone::kMicDist, cone::kMicAngle }) addKnob(k, ramp);
+        addKnob(cone::kPower, ramp);
         for (int k : { cone::kLevel, cone::kMix }) addKnob(k, plain);
 
         for (int i = 0; i < 3; ++i) mic.addItem(cone::kMicNames[i], i + 1);
@@ -33,6 +34,10 @@ public:
         autoLevel.setTooltip("Hold the broadband level while the mic, box or speaker changes, so you hear the tone change");
         addAndMakeVisible(autoLevel);
         autoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(processor.apvts, "autolevel", autoLevel);
+        heating.setButtonText("Coil Heating");
+        heating.setTooltip("The voice coil warms as you play loud and its resistance rises: slow power compression (seconds)");
+        addAndMakeVisible(heating);
+        heatAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(processor.apvts, "heating", heating);
 
         for (int i = 0; i < p.getNumPrograms(); ++i) presets.addItem(p.getProgramName(i), i + 1);
         presets.setTextWhenNothingSelected("Presets");
@@ -81,7 +86,7 @@ public:
         group("SPEAKER", 24, 640, 452);
         group("CABINET", 660, 976, 452);
         group("MICROPHONE", 24, 520, 582);
-        group("OUTPUT", 540, 976, 582);
+        group("DRIVE + OUTPUT", 540, 976, 582);
 
         for (auto& k : knobs) {
             const auto b = k.slider.getBounds().toFloat();
@@ -111,8 +116,9 @@ public:
         for (float cx : { 76.0f, 180.0f, 284.0f })
             knobs[(size_t) i++].slider.setBounds(at(cx - d / 2, row2, d, d));
         mic.setBounds(at(346, row2 + 16, 164, 28));
-        autoLevel.setBounds(at(556, row2 + 16, 130, 28));
-        for (float cx : { 790.0f, 912.0f })
+        heating.setBounds(at(546, row2 + 2, 140, 26));
+        autoLevel.setBounds(at(546, row2 + 34, 140, 26));
+        for (float cx : { 730.0f, 830.0f, 924.0f })
             knobs[(size_t) i++].slider.setBounds(at(cx - d / 2, row2, d, d));
     }
 
@@ -128,12 +134,12 @@ private:
     ConeProcessor& processor;
     pf::look::LookAndFeel lnf;
     cd::ui::SpeakerView view;
-    std::array<Knob, 13> knobs;
+    std::array<Knob, 14> knobs;
     int knobCount = 0;
     juce::ComboBox mic, presets;
-    juce::ToggleButton autoLevel;
+    juce::ToggleButton autoLevel, heating;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> micAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoAttachment, heatAttachment;
 
     float scale() const { return (float) getWidth() / kW; }
 

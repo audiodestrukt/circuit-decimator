@@ -20,7 +20,7 @@ float Engine::targetGain(const double* knobs) const
     const double band = knobs[kAutoLevel] > 0.5 && cabs[0] ? (double) cabs[0]->bandLevelDb() : refBandDb;
     // |H| (pressure per volt) at the band = 20e-6 / 2.83 * 10^(band / 20)
     const double h = 20e-6 / 2.83 * std::pow(10.0, band / 20);
-    return (float) (1.0 / (kAmpVolts * h) * std::pow(10.0, knobs[kLevel] / 20));
+    return (float) (1.0 / (ampVolts(knobs) * h) * std::pow(10.0, knobs[kLevel] / 20));
 }
 
 void Engine::prepare(double sampleRate, int maxBlockSize, const double* knobs)
@@ -73,6 +73,7 @@ void Engine::process(juce::AudioBuffer<float>& buffer, int numInputs, int numOut
     setKnobs(knobs);
     gain.setTargetValue(targetGain(knobs));
     mix.setTargetValue((float) (knobs[kMix] / 100));
+    const double volts = ampVolts(knobs);
     const int total = buffer.getNumSamples();
     const int channels = juce::jlimit(1, 2, numInputs);   // a mono input runs one cab
     for (int start = 0; start < total; start += maxBlock) {
@@ -90,7 +91,7 @@ void Engine::process(juce::AudioBuffer<float>& buffer, int numInputs, int numOut
             float y[2] {};
             for (int c = 0; c < channels; ++c) {
                 const float x = numInputs > 0 ? buffer.getSample(c, start + i) : 0.0f;
-                y[c] = (float) cabs[(size_t) c]->process(kAmpVolts * (double) x) * g;
+                y[c] = (float) cabs[(size_t) c]->process(volts * (double) x) * g;
                 if (!std::isfinite(y[c])) y[c] = 0;
             }
             if (channels == 1) y[1] = y[0];

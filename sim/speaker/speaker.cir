@@ -9,6 +9,9 @@
 .param ramp=0.05 re=6.4 le=0.4m l2=0.8m r2=12
 .param bl=12 mms=0.022 cms=1.8e-4 rms=1.84 sd=0.053
 .param vb=0.05 qa=20 rho=1.204 c0=343
+* large signal (Devices.h SpeakerMotor): nl=1 adds the coil leaving the gap (Bl(x): the
+* overhung coil's overlap with a tanh-fringed gap field) and the suspension stiffening
+.param nl=0 gap=7.9m xmax=0.48m fringe=1m xs=2.5m
 * back opening: area (m^2, 0 = closed) and panel thickness; its air plug is a mass in
 * parallel with the box air (in series here, in the mobility analogy)
 .param open=0 panel=0.018
@@ -50,6 +53,20 @@ Rlq lq mb 1e-12
 Rrab q mb {rabinv}
 Cmp mb 0 {mp}
 Rrp mb 0 {rpinv}
+
+* ---- large signal (nl = 1): corrections to the linear motor and suspension ----------------
+* x: cone displacement (the integral of the velocity v(u))
+Gxx 0 xx cur={v(u)}
+Cxx xx 0 1
+Rxx xx 0 1e15
+.func lcosh(u) {fringe*(abs(u)/fringe + ln(1 + exp(-2*abs(u)/fringe)) - ln(2))}
+.func ovl(p) {0.5*(lcosh(p + xmax + gap) - lcosh(p - xmax) - lcosh(p + xmax) + lcosh(p - xmax - gap))}
+.func dbl(p) {nl*bl*(ovl(p)/ovl(0) - 1)}
+* the extra force (Bl(x) - Bl0) i into u; the extra back-EMF across Re (Norton); the extra
+* spring force and the back-EMF's share of the force, drawn from u
+Bdf 0 u I={dbl(v(xx))*v(amp,vc)/re}
+Bde vc amp I={dbl(v(xx))*v(u)/re}
+Bds u 0 I={dbl(v(xx))*dbl(v(xx))/re*v(u) + nl*v(xx)*v(xx)*v(xx)/(cms*xs*xs)}
 
 .control
 set wr_singlescale

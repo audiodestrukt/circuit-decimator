@@ -7,10 +7,13 @@
 //       prints: freq |u/V| arg(u/V) |Z| arg(Z)   (Z = V / i at the amp)
 //   speaker_render step <out.dat> [--fs Hz] [--set ...]
 //       a 1 V step at t = 1 ms, 0.1 s: "time velocity current"
+//   speaker_render sine <amp V> <freq Hz> <cycles> <out.dat> [--fs Hz] [--set ...]
+//       "time velocity current displacement"
 //   speaker_render file <in.txt> <out.txt> [--fs Hz] [--set ...]
 //       amp volts, one sample per line at fs -> cone velocity (m/s), one per line
 //
 // params: re le l2 r2 bl mms cms rms sd vb qa open panel
+//         nl (0/1: the motor/suspension nonlinearity, default 0) gap xmax fringe xs
 #include "circuit/circuits/Speaker.h"
 
 #include <complex>
@@ -26,14 +29,18 @@ int main(int argc, char** argv)
     if (argc < 2) { std::fprintf(stderr, "usage: %s sweep|step ...\n", argv[0]); return 2; }
     const std::string mode = argv[1];
     DriverParams d;
+    d.nonlinear = false;   // the linear checks (compare.py) by default; --set nl=1
+    d.heating = false;
     BoxParams b;
+    double nl = 0;
     double fs = 96000;
-    const int first = mode == "sweep" ? 5 : mode == "file" ? 4 : 3;
+    const int first = mode == "sweep" ? 5 : mode == "sine" ? 6 : mode == "file" ? 4 : 3;
     if (argc < first) { std::fprintf(stderr, "bad arguments\n"); return 2; }
     std::map<std::string, double*> names { { "re", &d.re }, { "le", &d.le }, { "l2", &d.l2 }, { "r2", &d.r2 },
                                            { "bl", &d.bl }, { "mms", &d.mms }, { "cms", &d.cms }, { "rms", &d.rms },
                                            { "sd", &d.sd }, { "vb", &b.vb }, { "qa", &b.qa },
-                                           { "open", &b.open }, { "panel", &b.panel } };
+                                           { "open", &b.open }, { "panel", &b.panel }, { "nl", &nl },
+                                           { "gap", &d.gap }, { "xmax", &d.xmax }, { "fringe", &d.fringe }, { "xs", &d.xs } };
     for (int i = first; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--fs") && i + 1 < argc) fs = std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--set") && i + 1 < argc) {
@@ -45,6 +52,25 @@ int main(int argc, char** argv)
         } else { std::fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
 
+    d.nonlinear = nl > 0.5;
+    if (mode == "sine") {
+        const double amp = std::atof(argv[2]), freq = std::atof(argv[3]), cycles = std::atof(argv[4]);
+        SpeakerBox s;
+        s.build(d, b);
+        s.c.prepare(fs);
+        FILE* o = std::fopen(argv[5], "w");
+        if (!o) { std::perror(argv[5]); return 1; }
+        std::fprintf(o, "time velocity current displacement\n");
+        const long n = (long) (cycles / freq * fs);
+        for (long i = 0; i < n; ++i) {
+            const double t = i / fs;
+            s.c.setInput(s.input, amp * std::sin(2 * M_PI * freq * t) * std::min(1.0, t * freq / 4));   // 4-cycle fade-in
+            s.c.process();
+            std::fprintf(o, "%.9g %.9g %.9g %.9g\n", t, s.c.out(s.velocity), s.c.out(s.current), s.motor->displacement());
+        }
+        std::fclose(o);
+        return 0;
+    }
     if (mode == "file") {
         SpeakerBox s;
         s.build(d, b);

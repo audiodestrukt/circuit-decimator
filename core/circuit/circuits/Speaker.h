@@ -29,7 +29,7 @@
 // Radiation to a microphone happens in the IR stage, from the cone velocity.
 #pragma once
 
-#include "../Circuit.h"
+#include "../Devices.h"
 
 #include <cmath>
 #include <map>
@@ -44,6 +44,14 @@ struct DriverParams {
     double bl = 12;                                      // T m
     double mms = 0.022, cms = 1.8e-4, rms = 1.84;        // kg, m/N, N s/m
     double sd = 0.053;                                   // m^2 (12": effective diameter ~26 cm)
+    // large signal (net::SpeakerMotor): the coil leaving the gap, the suspension stiffening
+    bool nonlinear = true;
+    double gap = 7.9e-3, xmax = 0.48e-3, fringe = 1e-3;  // gap height, coil overhang each side, fringing width (m)
+    double xs = 2.5e-3;                                  // suspension: stiffness doubles at +-xs (m)
+    // coil heating: copper +0.393 %/K; coil -> magnet -> air, two thermal stages
+    bool heating = true;
+    double rthCoil = 3.0, tauCoil = 10.0;                // K/W, s
+    double rthMagnet = 1.5, tauMagnet = 1200.0;          // K/W, s
 };
 
 struct BoxParams {
@@ -108,12 +116,17 @@ inline double closedBoxQtc(const DriverParams& d, const BoxParams& b)
 }
 
 struct SpeakerBox {
+    net::SpeakerMotor* motor = nullptr;
+    double coilRise = 0, magnetRise = 0;   // K above ambient
+
     // Every element value and ratio from the driver and box: build() and live
     // changes both go through here, so the circuit can't drift from its parameters.
     // Deferred: call c.rebuildIfDirty() after (build() leaves it to prepare()).
     void retune(const DriverParams& d, const BoxParams& b)
     {
-        c.setValueDeferred(el["re"], d.re);
+        baseRe = d.re;
+        heat = d;
+        c.setValueDeferred(el["re"], d.re);   // cold; the motor device adds the coil's heating
         c.setValueDeferred(el["le"], d.le);
         c.setValueDeferred(el["l2"], d.l2);
         c.setValueDeferred(el["r2"], d.r2);
@@ -128,7 +141,37 @@ struct SpeakerBox {
         c.setValueDeferred(el["rp"], 1 / openingResistance(b));
         c.setRatioDeferred(0, 1 / d.bl);                   // motor
         c.setRatioDeferred(1, d.sd);                       // cone area
+        if (motor) {
+            motor->re0 = d.re;
+            motor->re = hotRe();
+            motor->bl0 = d.bl;
+            motor->k0 = 1 / d.cms;
+            motor->gap = d.gap;
+            motor->xmax = d.xmax;
+            motor->fringe = d.fringe;
+            motor->xs = d.xs;
+            motor->enabled = d.nonlinear;
+        }
     }
+
+    // Coil heating, at control rate: the coil's mean dissipation since the last
+    // call warms the coil (which sheds heat to the magnet, which sheds it to the
+    // air), and its resistance follows (applied by the motor device: no rebuild).
+    void heatStep(double seconds)
+    {
+        if (!motor) return;
+        const double p = motor->takePower();
+        if (!heat.heating) {
+            coilRise = magnetRise = 0;
+        } else {
+            const double cCoil = heat.tauCoil / heat.rthCoil, cMag = heat.tauMagnet / heat.rthMagnet;
+            const double flow = (coilRise - magnetRise) / heat.rthCoil;
+            coilRise += seconds * (p - flow) / cCoil;
+            magnetRise += seconds * (flow - magnetRise / heat.rthMagnet) / cMag;
+        }
+        motor->re = hotRe();
+    }
+    double hotRe() const { return baseRe * (1 + 0.00393 * coilRise); }
 
     net::Circuit c;
     int input = -1;              // amp voltage
@@ -136,6 +179,8 @@ struct SpeakerBox {
     int current = -1;            // output: voice coil current (A)
     std::map<std::string, int> el;
     double rAmp = 0.05;          // solid-state amp output resistance
+    double baseRe = 6.4;
+    DriverParams heat;
 
     void build(const DriverParams& d, const BoxParams& b)
     {
@@ -157,6 +202,8 @@ struct SpeakerBox {
         el["rab"] = c.resistor(q, mb, 1);                             // box absorption
         el["mp"] = c.capacitor(mb, net::GND, 1);                      // the back opening's air plug
         el["rp"] = c.resistor(mb, net::GND, 1);                       // its radiation resistance
+        motor = static_cast<net::SpeakerMotor*>(
+            &c.device(std::make_unique<net::SpeakerMotor>(), net::SpeakerMotor::ports(amp, vc, u)));
         retune(d, b);
         velocity = c.output(u);
         current = c.output(amp, vc, 1 / d.re);

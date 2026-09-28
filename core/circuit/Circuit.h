@@ -49,6 +49,10 @@ struct Device {
     // after the DC solve: the port voltages and currents it found (a core
     // carrying DC current magnetises itself to match, for example)
     virtual void initDC(const double* /*v*/, const double* /*i*/) {}
+    // true when, within one sample, the currents are linear in the port voltages
+    // (coefficients may change between samples, from state moved in commit()):
+    // if every device says so, one Newton step is exact and the solve stops there
+    virtual bool linearWithinSample() const { return false; }
 };
 
 struct Port {
@@ -431,6 +435,8 @@ private:
     // linearised at the final step (consistent with the node solution).
     int newton(bool dc)
     {
+        bool allLinear = !devs.empty();
+        for (auto& d : devs) allLinear = allLinear && d.dev->linearWithinSample();
         for (int k = 0; k < NI; ++k) vPrev[(size_t) k] = v[(size_t) k];
         int it = 0;
         while (it < maxIterations) {
@@ -472,6 +478,7 @@ private:
                 off += d.dev->numPorts();
             }
             if (conv < 1 && !limited) break;
+            if (allLinear && !dc && !limited) break;   // one step is exact
         }
         return it;
     }

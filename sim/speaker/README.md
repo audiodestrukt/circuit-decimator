@@ -65,6 +65,30 @@ vector paths, not traced. Measured conditions: 2.83 V, 1 m, infinite baffle,
 **Next, the IR tuning loop:** fit the same model to real cab IRs with known mic
 positions. That tests mic placement, not just on-axis response.
 
+## Large signal: motor nonlinearity and coil heating
+
+`Devices.h SpeakerMotor` adds:
+- **Bl(x):** the overhung coil's overlap with a tanh-fringed gap field;
+- **Suspension:** k0 (1 + (x/Xs)²);
+- **Coil heating:** copper +0.393 %/K, with a coil stage and a magnet stage.
+
+`speaker.cir` has the same corrections as behavioural sources (`.param nl=1`),
+solved fully implicitly. `nonlinear.py` compares the two on sine drive:
+
+- **Bl:** falls to 82 % of Bl0 at 2.15 mm (Legend 1258 geometry: gap 7.9 mm, overhang 0.48 mm).
+- **Sine drive** at 50 and 100 Hz, 2–40 V, closed 50 l box:
+  - peak displacement is identical;
+  - THD of the cone velocity agrees within 0.2 %;
+  - compression of the fundamental is identical;
+  - waveform error is ≤ 2.7e-3.
+- **50 Hz at 40 V:** 48 % THD and −4.8 dB compression. At 2 V it is essentially linear.
+- **Heating** (time constants shortened to reach steady state):
+  - coil rise is 55.58 K, against P·(Rcoil + Rmagnet) = 55.56 K;
+  - Re goes from 6.40 to 7.80 Ω;
+  - coil current at 1 kHz drops by 0.90 dB, against 0.96 dB from |Z| computed independently.
+
+![nonlinear](nonlinear.png)
+
 ## Running
 
 ```
@@ -74,5 +98,6 @@ python3 sim/speaker/radiation.py --plot radiation.png   # radiation to the mic
 python3 sim/speaker/cone.py --plot cone.png             # cone breakup
 python3 sim/speaker/breakup.py --plot breakup.png [--eta 0.08 --sr 20 ...]   # the whole speaker
 python3 sim/speaker/calibrate.py [--fit] [--electrical] --plot calibration.png   # fit to the Legend 1258
+python3 sim/speaker/nonlinear.py --plot nonlinear.png  # Bl(x), suspension: engine vs ngspice
 python3 sim/speaker/listen.py [out_dir] [--generic|--rigid] [--in di.wav]  # riff -> Phys Fuzz -> calibrated cab -> WAVs
 ```
